@@ -8,3 +8,5 @@ sqlalchemy
 
 # Драйвер для подключения Python к базе данных PostgreSQL
 psycopg2-binary
+alembic
+python-dotenv

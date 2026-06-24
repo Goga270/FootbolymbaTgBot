@@ -1,27 +1,27 @@
-# Файл: config.py
-
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # --- Ключевые настройки ---
 
 # Токен твоего Telegram-бота.
 # Лучше всего брать его из переменной окружения для безопасности.
-TELEGRAM_TOKEN = os.getenv("BOT_TOKEN", "8296506874:AAG9zZ6D7e4v37VpXAojnEV45G14KfWRoNQ")
+TELEGRAM_TOKEN = os.getenv("BOT_TOKEN")
 
 # Строка подключения к базе данных PostgreSQL.
 # Формат: "postgresql://ПОЛЬЗОВАТЕЛЬ:ПАРОЛЬ@ХОСТ:ПОРТ/ИМЯ_БАЗЫ"
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://footbolymba_bot_user:1qaz@localhost:5432/footbolymba_bot")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # --- Настройки бота ---
 
 # Список числовых Telegram ID администраторов, которые могут управлять ботом.
 # Пример: ADMIN_IDS = [111111111, 222222222]
-ADMIN_IDS = [866608668]
+raw_admin_ids = os.getenv("ADMIN_IDS")
+ADMIN_IDS = [int(x.strip()) for x in raw_admin_ids.split(",") if x.strip()]
 
-# Опции для игры "Камень-Ножницы-Бумага"
+# ID основной группы для анонсов
+TARGET_GROUP_ID = int(os.getenv("TARGET_GROUP_ID"))
+
+# Опции КНБ
 RPS_OPTIONS = ['камень', 'ножницы', 'бумага']
-
-# --- ID основной группы для анонсов ---
-# Узнать его можно, добавив бота в группу и написав там команду /my_chat_id
-# ID должен быть числом (например, -1001234567890)
-TARGET_GROUP_ID = -1003626413939

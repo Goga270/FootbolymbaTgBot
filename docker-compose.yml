@@ -1,0 +1,37 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: footbolymba_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+      interval: 3s      # Частота проверки здоровья
+      timeout: 3s       # Время ожидания ответа
+      retries: 5        # Количество попыток перед объявлением сбоя
+      start_period: 3s  # Время форы базе на инициализацию перед первой проверкой
+
+  bot:
+    build: .
+    container_name: footbolymba_bot
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/${DB_NAME}
+      ADMIN_IDS: ${ADMIN_IDS}
+      TARGET_GROUP_ID: ${TARGET_GROUP_ID}
+
+volumes:
+  postgres_data:
