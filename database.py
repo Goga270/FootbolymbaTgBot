@@ -60,10 +60,10 @@ class TournamentPairing(Base):
     __tablename__ = 'tournament_pairings'
     id = Column(Integer, primary_key=True)
     tournament_id = Column(Integer, ForeignKey('tournaments.id'))
-    slot_id = Column(Integer, nullable=True)  # ID слота в турнирной сетке (от 1 до N-1)
-    stage = Column(String, nullable=False)  # например: "1/8", "1/4", "ФИНАЛ"
-    captain_a_id = Column(BigInteger, nullable=True)  # Сделано nullable для пустых ячеек ожидания
-    captain_b_id = Column(BigInteger, nullable=True)  # Сделано nullable для пустых ячеек ожидания
+    slot_id = Column(Integer, nullable=True)  # ID слота в турнирной сетке (от 1 до N)
+    stage = Column(String, nullable=False)  # например: "1/8", "1/4", "ФИНАЛ", "МАТЧ_ЗА_3_МЕСТО"
+    captain_a_id = Column(BigInteger, nullable=True)
+    captain_b_id = Column(BigInteger, nullable=True)
     is_completed = Column(Boolean, default=False)
     manual_score_a = Column(Integer, nullable=True)
     manual_score_b = Column(Integer, nullable=True)
@@ -71,6 +71,18 @@ class TournamentPairing(Base):
 
     tournament = relationship('Tournament', backref='pairings')
     matches = relationship('Match', back_populates='pairing', order_by='Match.created_at')
+
+
+class TournamentResult(Base):
+    __tablename__ = 'tournament_results'
+    id = Column(Integer, primary_key=True)
+    tournament_id = Column(Integer, ForeignKey('tournaments.id'))
+    first_place_id = Column(BigInteger, nullable=True)  # tg_id победителя (1-е место)
+    second_place_id = Column(BigInteger, nullable=True)  # tg_id серебряного призера (2-е место)
+    third_place_id = Column(BigInteger, nullable=True)  # tg_id бронзового призера (3-е место)
+    completed_at = Column(DateTime, default=datetime.utcnow)
+
+    tournament = relationship('Tournament')
 
 
 class Match(Base):
@@ -104,6 +116,8 @@ class DraftState(Base):
     rps_winner = Column(String, nullable=True)
     rps_choice_a = Column(String, nullable=True)
     rps_choice_b = Column(String, nullable=True)
+
+    # Выбранные цвета формы на этот матч
     team_a_color = Column(String, default="🔴")
     team_b_color = Column(String, default="🔵")
 

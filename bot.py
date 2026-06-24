@@ -1,12 +1,11 @@
-# Файл: bot.py
-
 import logging
+import random
 from typing import List, Optional
 
 from config import TELEGRAM_TOKEN, ADMIN_IDS, RPS_OPTIONS, TARGET_GROUP_ID
 from database import (
     SessionLocal, Player, Match, DraftState, Action, MatchStatus,
-    Tournament, TournamentPairing,
+    Tournament, TournamentPairing, TournamentResult,
     create_db_tables, find_players, get_player_by_nickname, get_player_by_tgid,
     get_top_scorers_or_assisters, get_top_most_frequent_players, get_top_winners
 )
@@ -27,22 +26,17 @@ logger = logging.getLogger(__name__)
 ALLOWED_STAGES = ["1/128", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2", "ФИНАЛ", "МАТЧ_ЗА_3_МЕСТО"]
 
 # --- Состояния для ConversationHandler'ов ---
-# Редактирование профиля
 EDIT_CHOICE, EDIT_NICKNAME, EDIT_FULLNAME = range(3)
-# Планирование матча
 PLAN_FIELD, PLAN_DATETIME = range(3, 5)
-# Создание матча
 SELECT_PLAN, SELECT_MATCH_TYPE, SELECT_REMATCH, CHOOSE_CAPTAIN_A, CHOOSE_CAPTAIN_B, CHOOSE_TOURNAMENT_PAIRING, MANUAL_ADD_PLAYERS = range(
     5, 12)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Перенаправляет на help."""
     await help_command(update, context)
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает список команд в зависимости от контекста (Группа/ЛС)."""
     chat_type = update.effective_chat.type
     user_id = update.effective_user.id
     is_admin = user_id in ADMIN_IDS
@@ -55,7 +49,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔹 /top_frequent — Самые активные игроки\n"
             "🔹 /top_winners — Лидеры по победам\n"
             "🔹 /list_tournaments — Показать все турниры\n"
-            "🔹 /view_bracket &lt;ID_турнира&gt; — Посмотреть сетку\n\n"
+            "🔹 /view_bracket &lt;ID_турнира&gt; — Посмотреть сетку\n"
+            "🔹 /tournament_history — Зал славы (архив победителей)\n\n"
             "💬 <i>Чтобы зарегистрироваться или настроить профиль, перейдите в личные сообщения с ботом.</i>"
         )
     else:
@@ -69,6 +64,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🔸 /player_form &lt;Никнейм&gt; — Форма игрока (последние игры)\n"
             "🔸 /list_tournaments — Показать все турниры\n"
             "🔸 /view_bracket &lt;ID_турнира&gt; — Посмотреть сетку\n"
+            "🔸 /tournament_history — Зал славы (архив победителей)\n"
         )
         if is_admin:
             help_text += (
@@ -84,6 +80,9 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "🔹 /create_tournament &lt;Имя&gt; &lt;BO1/BO2&gt; &lt;Кол-во_игроков&gt; — Создать турнир\n"
                 "🔹 /add_pairing &lt;ID&gt; &lt;Слот_ID&gt; &lt;Стадия&gt; &lt;КэпА&gt; &lt;КэпБ&gt; [счет] — Изменить ячейку сетки\n"
                 "🔹 /close_tournament &lt;ID&gt; — Архивировать турнир\n"
+                "🔹 /add_player &lt;Никнейм&gt; &lt;Имя Фамилия&gt; — Зарегистрировать игрока без Telegram\n"
+                "🔹 /list_players — Список всех зарегистрированных игроков\n"
+                "🔹 /search_player &lt;Никнейм&gt; — Быстрый поиск игрока\n"
             )
     await update.message.reply_text(help_text, parse_mode='HTML')
 
@@ -164,25 +163,42 @@ def get_pairing_winner(pairing: TournamentPairing, session: Session) -> Optional
 
 
 def trigger_advancement(session: Session, pairing: TournamentPairing):
-    """Автоматически двигает победителя ячейки в следующий этап."""
+    """Автоматически двигает победителя в финал, а проигравших в полуфинале — в матч за 3-е место."""
     total_pairings = session.query(TournamentPairing).filter_by(tournament_id=pairing.tournament_id).count()
-    N = total_pairings + 1
+    # Так как мы добавили 1 экстра-слот под матч за 3-е место, реальное N игроков вычисляется как:
+    N = total_pairings
 
     flow = get_next_slot(pairing.slot_id, N)
-    if flow:
-        next_slot_id, next_side = flow
-        next_pairing = session.query(TournamentPairing).filter_by(
-            tournament_id=pairing.tournament_id,
-            slot_id=next_slot_id
-        ).first()
-        if next_pairing:
-            winner_tgid = get_pairing_winner(pairing, session)
-            if winner_tgid:
+    winner_tgid = get_pairing_winner(pairing, session)
+
+    if winner_tgid:
+        if flow:
+            next_slot_id, next_side = flow
+            next_pairing = session.query(TournamentPairing).filter_by(
+                tournament_id=pairing.tournament_id,
+                slot_id=next_slot_id
+            ).first()
+            if next_pairing:
                 if next_side == 'a':
                     next_pairing.captain_a_id = winner_tgid
                 else:
                     next_pairing.captain_b_id = winner_tgid
-                session.commit()
+
+            # --- ЛОГИКА МАТЧА ЗА 3-Е МЕСТО ---
+            # Если следующий слот — это ФИНАЛ (Слот N-1), значит текущая стадия была ПОЛУФИНАЛОМ.
+            # Проигравший в полуфинале отправляется в матч за 3-е место (Слот N)!
+            if next_slot_id == N - 1:
+                loser_tgid = pairing.captain_b_id if winner_tgid == pairing.captain_a_id else pairing.captain_a_id
+                third_place_pairing = session.query(TournamentPairing).filter_by(
+                    tournament_id=pairing.tournament_id,
+                    slot_id=N
+                ).first()
+                if third_place_pairing:
+                    if next_side == 'a':
+                        third_place_pairing.captain_a_id = loser_tgid
+                    else:
+                        third_place_pairing.captain_b_id = loser_tgid
+                    session.commit()
 
 
 def get_captain_name_or_placeholder(session: Session, slot_id: int, tournament_id: int, side: str) -> str:
@@ -195,7 +211,12 @@ def get_captain_name_or_placeholder(session: Session, slot_id: int, tournament_i
             return player.nickname if player else f"ID {tg_id}"
 
     total_pairings = session.query(TournamentPairing).filter_by(tournament_id=tournament_id).count()
-    N = total_pairings + 1
+    N = total_pairings
+
+    # Матч за 3-е место (Слот N) наполняется проигравшими из полуфиналов (Слоты N-3 и N-2)
+    if slot_id == N:
+        parent_slot = N - 3 if side == 'a' else N - 2
+        return f"Проигравший Слот {parent_slot}"
 
     rounds = []
     offset = 0
@@ -240,6 +261,45 @@ def player_list_to_display(session: Session, ids: List[int]) -> str:
     return '\n'.join(f"- {p.full_name}" for p in players)
 
 
+def generate_admin_rosters_helper(session: Session, match: Match) -> str:
+    """Генерирует админу в ЛС удобные списки составов для быстрого копирования ников."""
+    ds = match.draft
+    if not ds:
+        return ""
+    team_a_ids = ds.get_team_list('a')
+    team_b_ids = ds.get_team_list('b')
+
+    color_a = ds.team_a_color if ds.team_a_color else "🔴"
+    color_b = ds.team_b_color if ds.team_b_color else "🔵"
+
+    text = f"📋 <b>Составы матча №{match.id} для быстрого копирования никнеймов игроков:</b>\n\n"
+
+    text += f"{color_a} <b>КОМАНДА А:</b>\n"
+    for pid in team_a_ids:
+        p = session.get(Player, pid)
+        if p:
+            text += f"• <code>{p.nickname}</code> — {p.full_name} (@{p.tg_username or 'нет'})\n"
+
+    text += f"\n{color_b} <b>КОМАНДА Б:</b>\n"
+    for p_id in team_b_ids:
+        p = session.get(Player, p_id)
+        if p:
+            text += f"• <code>{p.nickname}</code> — {p.full_name} (@{p.tg_username or 'нет'})\n"
+
+    text += (
+        f"\n💡 <b>Как вносить результативные действия (пакетом, одним сообщением):</b>\n"
+        f"Вы можете записать все действия игрока за матч в одном сообщении через запятую.\n\n"
+        f"<i>Формат:</i> <code>Никнейм: Х голов, Y ассистов</code>\n\n"
+        f"<i>Примеры ввода:</i>\n"
+        f"• <code>Goga270: 5 голов, 3 ассиста</code>\n"
+        f"• <code>Denis_Liver: гол, пас</code>\n"
+        f"• <code>Sanya_Smirnov: 3 гола</code>\n\n"
+        f"Для завершения ввода обязательно отправьте команду:\n"
+        f"<code>/done_actions</code>"
+    )
+    return text
+
+
 def ensure_no_active_match(session: Session):
     active = session.query(Match).filter(
         Match.status.in_([MatchStatus.CREATED, MatchStatus.DRAFTING, MatchStatus.ACTIVE])).first()
@@ -281,8 +341,6 @@ def get_player_stats(session: Session, player: Player):
                 current_streak += 1
         elif lost:
             stats['losses'] += 1
-            streak_broken = True
-        else:
             streak_broken = True
 
     stats['win_streak'] = current_streak
@@ -353,7 +411,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
             planned_match["players"].discard(user.id)
 
 
-# --- Логика поиска игроков (Восстановленная для матчей) ---
+# --- Логика поиска игроков ---
 
 async def start_player_search(update: Update, context: ContextTypes.DEFAULT_TYPE, next_state_key: str, prompt: str):
     context.user_data['search_next_state'] = next_state_key
@@ -682,7 +740,7 @@ async def create_match_select_type(update: Update, context: ContextTypes.DEFAULT
     else:
         creation_data['is_tournament'] = False
 
-        # Запускаем интерактивный поиск Капитана А по БД (как просил пользователь)
+        # Интерактивный поиск Капитана А
         context.user_data['next_function'] = create_match_found_cap_a
         await start_player_search(
             update, context, "cap_a_nickname",
@@ -722,7 +780,7 @@ async def create_match_found_cap_b(update: Update, context: ContextTypes.DEFAULT
 
     text = (
         f"Капитаны успешно выбраны!\n"
-        f"🟢 Капитан А: <b>{cap_a.full_name}</b>\n"
+        f"🔴 Капитан А: <b>{cap_a.full_name}</b>\n"
         f"🔵 Капитан Б: <b>{cap_b.full_name}</b>\n\n"
         f"Этот товарищеский матч является реваншем (без игры в КНБ)?"
     )
@@ -881,17 +939,29 @@ async def finalize_match_creation(update: Update, context: ContextTypes.DEFAULT_
 
             if TARGET_GROUP_ID:
                 tour_info = ""
+                rematch_info = ""
                 if is_tournament and pairing_id:
                     pairing = session.get(TournamentPairing, pairing_id)
                     tour_info = f"\n🏆 <b>Турнир:</b> {pairing.tournament.name} ({pairing.stage})"
 
+                    # Получаем информацию о прошлых играх в BO2
+                    finished_matches = session.query(Match).filter_by(tournament_pairing_id=pairing.id,
+                                                                      status=MatchStatus.FINISHED).all()
+                    if pairing.tournament.match_format == "BO2":
+                        if len(finished_matches) == 1:
+                            prev = finished_matches[0]
+                            rematch_info = f"\n🔄 <b>Ответный матч</b> (прошлый счет: {prev.score_a}-{prev.score_b})"
+                        elif pairing.manual_score_text and not pairing.is_completed:
+                            rematch_info = f"\n🔄 <b>Ответный матч</b> (прошлый счет: {pairing.manual_score_text})"
+
+                # Единый красивый анонс без вывода команды /start_draft
                 await context.bot.send_message(
                     chat_id=TARGET_GROUP_ID,
-                    text=f"🔥 <b>Матч №{match.id} запланирован!</b>{tour_info}\n\n"
+                    text=f"🔥 <b>Матч №{match.id} запланирован!</b>{tour_info}{rematch_info}\n\n"
                          f"👥 <b>Капитаны:</b>\n"
-                         f"🟢 <b>Команда А:</b> {cap_a.full_name}\n"
+                         f"🔴 <b>Команда А:</b> {cap_a.full_name}\n"
                          f"🔵 <b>Команда Б:</b> {cap_b.full_name}\n\n"
-                         f"Ожидается старт драфта: <code>/start_draft {match.id}</code>",
+                         f"Ожидается старт драфта администратором.",
                     parse_mode='HTML'
                 )
         except ValueError as e:
@@ -1099,26 +1169,32 @@ async def proceed_to_draft_turn(context: ContextTypes.DEFAULT_TYPE, session: Ses
     pool = ds.get_pool_list()
 
     if not pool:
-        match.status = MatchStatus.ACTIVE
-        session.commit()
-        team_a_ids, team_b_ids = ds.get_team_list('a'), ds.get_team_list('b')
-        cap_a, cap_b = session.get(Player, ds.get_team_list('a')[0]), session.get(Player, ds.get_team_list('b')[0])
+        # Драфт закончен! Запускаем выбор цветов формы перед сохранением
+        loser_side = 'b' if ds.rps_winner == 'a' else 'a'
+        loser_tg = match.captain_b_id if ds.rps_winner == 'a' else match.captain_a_id
+        winner_tg = match.captain_a_id if ds.rps_winner == 'a' else match.captain_b_id
 
-        await context.bot.send_message(chat_id=match.captain_a_id,
-                                       text=f"✅ <b>Драфт завершен.</b>\n\n<b>Ваша команда:</b>\n{player_list_to_display(session, team_a_ids)}",
-                                       parse_mode='HTML')
-        await context.bot.send_message(chat_id=match.captain_b_id,
-                                       text=f"✅ <b>Драфт завершен.</b>\n\n<b>Ваша команда:</b>\n{player_list_to_display(session, team_b_ids)}",
-                                       parse_mode='HTML')
+        buttons = [
+            [
+                InlineKeyboardButton("🔴 Красный", callback_data=f"color_choice:{match.id}:{loser_side}:red"),
+                InlineKeyboardButton("🔵 Синий", callback_data=f"color_choice:{match.id}:{loser_side}:blue")
+            ],
+            [
+                InlineKeyboardButton("🤝 Отдать выбор сопернику",
+                                     callback_data=f"color_choice:{match.id}:{loser_side}:yield")
+            ]
+        ]
 
-        if TARGET_GROUP_ID:
-            await context.bot.send_message(chat_id=TARGET_GROUP_ID,
-                                           text=f"✅ <b>Драфт завершен! Составы на матч №{match.id}:</b>\n\n"
-                                                f"🟢 <b>{cap_a.full_name} (Команда А)</b>\n"
-                                                f"{player_list_to_display(session, team_a_ids)}\n\n"
-                                                f"🔵 <b>{cap_b.full_name} (Команда Б)</b>\n"
-                                                f"{player_list_to_display(session, team_b_ids)}",
-                                           parse_mode='HTML')
+        await context.bot.send_message(
+            chat_id=loser_tg,
+            text="🎨 <b>Драфт успешно завершен!</b>\n\nВы проиграли преддрафтовый выбор КНБ. Пожалуйста, выберите цвет формы вашей команды на игру:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode='HTML'
+        )
+        await context.bot.send_message(
+            chat_id=winner_tg,
+            text="⏳ Драфт завершен. Ожидайте, пока ваш соперник выбирает цвет формы..."
+        )
         return
 
     giver_tg, receiver_tg = (match.captain_a_id, match.captain_b_id) if ds.turn == 'a' else (
@@ -1146,7 +1222,136 @@ async def proceed_to_draft_turn(context: ContextTypes.DEFAULT_TYPE, session: Ses
     await context.bot.send_message(chat_id=receiver_tg, text="⏳ Ожидайте, соперник выбирает пару игроков...")
 
 
+async def color_choice_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Интерактивный выбор цветов формы после драфта."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(':')
+    match_id = int(parts[1])
+    side = parts[2]
+    choice = parts[3]
+
+    other_side = 'b' if side == 'a' else 'a'
+
+    with SessionLocal() as session:
+        match = session.get(Match, match_id)
+        if not (match and match.draft):
+            return
+
+        ds = match.draft
+
+        # Проверка авторизации
+        expected_tg = match.captain_a_id if side == 'a' else match.captain_b_id
+        if update.effective_user.id != expected_tg:
+            await query.answer("❌ Вы не можете выбирать цвет за соперника!", show_alert=True)
+            return
+
+        if choice == 'red':
+            setattr(ds, f'team_{side}_color', "🔴")
+            setattr(ds, f'team_{other_side}_color', "🔵")
+            await query.edit_message_text("✅ Вы выбрали <b>Красный</b> цвет формы.", parse_mode='HTML')
+            await context.bot.send_message(
+                chat_id=match.captain_a_id if side == 'b' else match.captain_b_id,
+                text="🎨 Соперник выбрал цвет формы. Вашей команде автоматически присвоен <b>Синий</b> цвет.",
+                parse_mode='HTML'
+            )
+            session.commit()
+            await publish_draft_results(context, session, match.id)
+
+        elif choice == 'blue':
+            setattr(ds, f'team_{side}_color', "🔵")
+            setattr(ds, f'team_{other_side}_color', "🔴")
+            await query.edit_message_text("✅ Вы выбрали <b>Синий</b> цвет формы.", parse_mode='HTML')
+            await context.bot.send_message(
+                chat_id=match.captain_a_id if side == 'b' else match.captain_b_id,
+                text="🎨 Соперник выбрал цвет формы. Вашей команде автоматически присвоен <b>Красный</b> цвет.",
+                parse_mode='HTML'
+            )
+            session.commit()
+            await publish_draft_results(context, session, match.id)
+
+        elif choice == 'yield':
+            # Логика передачи выбора сопернику
+            loser_side = 'b' if ds.rps_winner == 'a' else 'a'
+            if side == loser_side:
+                # Loser уступил выбор, теперь спрашиваем Winner
+                winner_tg = match.captain_a_id if other_side == 'a' else match.captain_b_id
+                await query.edit_message_text("🤝 Вы передали выбор цвета сопернику. Ожидайте...", parse_mode='HTML')
+
+                buttons = [
+                    [
+                        InlineKeyboardButton("🔴 Красный", callback_data=f"color_choice:{match.id}:{other_side}:red"),
+                        InlineKeyboardButton("🔵 Синий", callback_data=f"color_choice:{match.id}:{other_side}:blue")
+                    ],
+                    [
+                        InlineKeyboardButton("🤝 Отдать выбор сопернику",
+                                             callback_data=f"color_choice:{match.id}:{other_side}:yield")
+                    ]
+                ]
+                await context.bot.send_message(
+                    chat_id=winner_tg,
+                    text="🎨 Соперник уступил вам право выбора цвета формы. Пожалуйста, выберите цвет формы:",
+                    reply_markup=InlineKeyboardMarkup(buttons),
+                    parse_mode='HTML'
+                )
+            else:
+                # Оба капитана уступили право выбора -> рандомизируем цвета
+                await query.edit_message_text(
+                    "🤝 Вы также передали выбор цвета сопернику. Бот распределит цвета случайно.")
+
+                if random.choice([True, False]):
+                    ds.team_a_color = "🔴"
+                    ds.team_b_color = "🔵"
+                else:
+                    ds.team_a_color = "🔵"
+                    ds.team_b_color = "🔴"
+
+                session.commit()
+
+                random_msg = f"🎲 Оба капитана отказались от выбора. Цвета распределены случайно:\n\n• Команда А — {ds.team_a_color}\n• Команда Б — {ds.team_b_color}"
+                await context.bot.send_message(chat_id=match.captain_a_id, text=random_msg, parse_mode='HTML')
+                await context.bot.send_message(chat_id=match.captain_b_id, text=random_msg, parse_mode='HTML')
+                await publish_draft_results(context, session, match.id)
+
+
+async def publish_draft_results(context: ContextTypes.DEFAULT_TYPE, session: Session, match_id: int):
+    """Публикует и рассылает результаты драфта после утверждения цветов."""
+    match = session.get(Match, match_id)
+    ds = match.draft
+    match.status = MatchStatus.ACTIVE
+    session.commit()
+
+    team_a_ids, team_b_ids = ds.get_team_list('a'), ds.get_team_list('b')
+    cap_a, cap_b = session.get(Player, ds.get_team_list('a')[0]), session.get(Player, ds.get_team_list('b')[0])
+
+    color_a = ds.team_a_color if ds.team_a_color else "🔴"
+    color_b = ds.team_b_color if ds.team_b_color else "🔵"
+
+    await context.bot.send_message(chat_id=match.captain_a_id,
+                                   text=f"✅ <b>Драфт завершен!</b>\n\n<b>Ваша команда ({color_a}):</b>\n{player_list_to_display(session, team_a_ids)}",
+                                   parse_mode='HTML')
+    await context.bot.send_message(chat_id=match.captain_b_id,
+                                   text=f"✅ <b>Драфт завершен!</b>\n\n<b>Ваша команда ({color_b}):</b>\n{player_list_to_display(session, team_b_ids)}",
+                                   parse_mode='HTML')
+
+    if TARGET_GROUP_ID:
+        tour_info = ""
+        if match.tournament_pairing_id:
+            pairing = match.pairing
+            tour_info = f" ({pairing.tournament.name} | {pairing.stage})"
+
+        await context.bot.send_message(chat_id=TARGET_GROUP_ID,
+                                       text=f"✅ <b>Драфт завершен! Составы на матч №{match.id}{tour_info}:</b>\n\n"
+                                            f"{color_a} <b>{cap_a.full_name} (Команда А)</b>\n"
+                                            f"{player_list_to_display(session, team_a_ids)}\n\n"
+                                            f"{color_b} <b>{cap_b.full_name} (Команда Б)</b>\n"
+                                            f"{player_list_to_display(session, team_b_ids)}",
+                                       parse_mode='HTML')
+
+
 async def give_step1_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Шаг 1 драфта: Выбор первого игрока из пары."""
     query = update.callback_query
     await query.answer()
 
@@ -1160,6 +1365,7 @@ async def give_step1_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         ds = match.draft
 
+        # ЗАЩИТА: Проверка очереди
         expected_giver_tg = match.captain_a_id if ds.turn == 'a' else match.captain_b_id
         if update.effective_user.id != expected_giver_tg:
             await query.answer("❌ Сейчас не ваш ход!", show_alert=True)
@@ -1192,6 +1398,7 @@ async def give_step1_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def give_step2_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Шаг 2 драфта: Выбор второго игрока и отправка пары сопернику."""
     query = update.callback_query
     await query.answer()
 
@@ -1206,6 +1413,7 @@ async def give_step2_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         ds = match.draft
 
+        # ЗАЩИТА: Проверка очереди
         expected_giver_tg = match.captain_a_id if ds.turn == 'a' else match.captain_b_id
         if update.effective_user.id != expected_giver_tg:
             await query.answer("❌ Сейчас не ваш ход!", show_alert=True)
@@ -1237,6 +1445,7 @@ async def give_step2_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def choose_from_pair_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Обработка выбора игрока из пары."""
     query = update.callback_query
     await query.answer()
 
@@ -1250,6 +1459,7 @@ async def choose_from_pair_callback(update: Update, context: ContextTypes.DEFAUL
 
         ds = match.draft
 
+        # ЗАЩИТА: Проверка очереди
         expected_chooser_tg = match.captain_b_id if ds.turn == 'a' else match.captain_a_id
         if update.effective_user.id != expected_chooser_tg:
             await query.answer("❌ Это выбор вашего соперника!", show_alert=True)
@@ -1279,6 +1489,7 @@ async def choose_from_pair_callback(update: Update, context: ContextTypes.DEFAUL
 
 
 async def finish_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /finish_match <ID> <scoreA-scoreB> - Завершает матч и отправляет шпаргалку."""
     if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
         return
     if len(context.args) < 2:
@@ -1319,62 +1530,85 @@ async def finish_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         session.commit()
 
+        # Сохраняем в сессии и отправляем шпаргалку
         context.user_data['finishing_match'] = match_id
+        roster_text = generate_admin_rosters_helper(session, match)
+
         await update.message.reply_text(
             f"✅ <b>Матч №{match_id} успешно завершен ({score_a}-{score_b}).</b>\n\n"
-            f"Присылайте результативные действия игроков:\n"
-            f"<code>Никнейм:действие:минута</code>\n"
-            f"Пример: <code>A_Nick:goal:12</code>\n\n"
-            f"Для окончания обязательно отправьте:\n"
-            f"<code>/done_actions</code>",
+            f"Внимание: Результаты будут опубликованы в группе <b>после внесения всей статистики</b> и ввода <code>/done_actions</code>!\n\n"
+            f"{roster_text}",
             parse_mode='HTML'
         )
 
-        if TARGET_GROUP_ID:
-            try:
-                cap_a = get_player_by_tgid(session, match.captain_a_id)
-                cap_b = get_player_by_tgid(session, match.captain_b_id)
-
-                if not (cap_a and cap_b):
-                    return
-
-                winner_team_name = cap_a.full_name if score_a > score_b else cap_b.full_name if score_b > score_a else "Ничья"
-                congrats = f"🏆 Поздравляем команду <b>{winner_team_name}</b> с победой!" if score_a != score_b else "🤝 Боевая ничья!"
-
-                await context.bot.send_message(
-                    chat_id=TARGET_GROUP_ID,
-                    text=f"🏁 <b>Матч №{match_id} завершен!</b>\n\n"
-                         f"🟢 Команда А ({cap_a.full_name})  <b>{score_a} - {score_b}</b>  🔵 Команда Б ({cap_b.full_name})\n\n"
-                         f"{congrats}",
-                    parse_mode='HTML'
-                )
-            except Exception as e:
-                logger.error(f"Не удалось отправить результат в группу: {e}")
-
 
 async def done_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /done_actions - Завершает ввод статистики и публикует единое сводное сообщение в группу."""
     if update.effective_user.id not in ADMIN_IDS or 'finishing_match' not in context.user_data:
         return
 
     match_id = context.user_data.pop('finishing_match')
-    await update.message.reply_text("✅ Запись голевых действий завершена.")
+    await update.message.reply_text(
+        "✅ Запись голевых действий успешно завершена. Сводный результат отправлен в группу.")
 
     if TARGET_GROUP_ID:
         with SessionLocal() as session:
-            actions = session.query(Action).filter_by(match_id=match_id).all()
-            if not actions:
+            match = session.get(Match, match_id)
+            if not match:
                 return
-            stats_msg = f"📊 <b>Статистика результативных действий (Матч №{match_id}):</b>\n\n"
-            players_actions = {}
-            for action in actions:
-                players_actions.setdefault(action.player_id, []).append(action.action_type)
-            for player_id, action_list in players_actions.items():
-                player = session.get(Player, player_id)
-                stats_msg += f"👤 <b>{player.full_name}</b>: {', '.join(action_list)}\n"
-            await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=stats_msg, parse_mode='HTML')
+
+            cap_a = get_player_by_tgid(session, match.captain_a_id)
+            cap_b = get_player_by_tgid(session, match.captain_b_id)
+
+            score_a = match.score_a
+            score_b = match.score_b
+
+            color_a = match.draft.team_a_color if (match.draft and match.draft.team_a_color) else "🔴"
+            color_b = match.draft.team_b_color if (match.draft and match.draft.team_b_color) else "🔵"
+
+            winner_team_name = cap_a.full_name if score_a > score_b else cap_b.full_name if score_b > score_a else "Ничья"
+            congrats = f"🏆 Поздравляем команду <b>{winner_team_name}</b> с победой!" if score_a != score_b else "🤝 Боевая ничья!"
+
+            # Сбор голевых действий
+            actions = session.query(Action).filter_by(match_id=match_id).all()
+            actions_text = ""
+            if actions:
+                actions_text = "\n\n📊 <b>Результативные действия участников:</b>\n"
+                players_actions = {}
+                for action in actions:
+                    players_actions.setdefault(action.player_id, []).append(action.action_type)
+
+                for player_id, action_list in players_actions.items():
+                    player = session.get(Player, player_id)
+                    goals = action_list.count('goal')
+                    assists = action_list.count('assist')
+
+                    parts = []
+                    if goals > 0:
+                        parts.append(f"⚽ {goals}")
+                    if assists > 0:
+                        parts.append(f"🎯 {assists}")
+
+                    actions_text += f"• <b>{player.full_name}</b> ({player.nickname}): {', '.join(parts)}\n"
+
+            tour_info = ""
+            if match.tournament_pairing_id:
+                pairing = match.pairing
+                tour_info = f"\n🏆 <b>Турнир:</b> {pairing.tournament.name} ({pairing.stage})"
+
+            # Единое объявление
+            group_msg = (
+                f"🏁 <b>Матч №{match_id} завершен!</b>{tour_info}\n\n"
+                f"{color_a} Команда А ({cap_a.full_name})  <b>{score_a} - {score_b}</b>  {color_b} Команда Б ({cap_b.full_name})\n\n"
+                f"{congrats}"
+                f"{actions_text}"
+            )
+
+            await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=group_msg, parse_mode='HTML')
 
 
 async def player_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Любой в ЛС) Показывает форму за 5 последних матчей."""
     if update.effective_chat.type != 'private':
         return
     if not context.args:
@@ -1398,6 +1632,7 @@ async def player_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def private_message_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Распределяет текст админа в ЛС на финализацию матча или внесение статистики."""
     if update.effective_user.id in ADMIN_IDS:
         if 'match_creation_state' in context.user_data:
             await finalize_match_creation(update, context, update.message.text.split())
@@ -1406,26 +1641,62 @@ async def private_message_dispatcher(update: Update, context: ContextTypes.DEFAU
 
 
 async def record_action_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Пакетный парсер результативных действий одной строкой."""
     match_id = context.user_data.get('finishing_match')
-    parts = update.message.text.strip().split(':')
+    text = update.message.text.strip()
+    parts = text.split(':')
     if len(parts) < 2:
+        await update.message.reply_text("⚠️ Ошибка формата. Пример: <code>Goga270: 2 гола, 1 ассист</code>",
+                                        parse_mode='HTML')
         return
-    nickname, action_type = parts[0].strip(), parts[1].strip()
-    minute = int(parts[2]) if len(parts) > 2 and parts[2].strip().isdigit() else None
-    with SessionLocal() as session:
-        if player := get_player_by_nickname(session, nickname):
-            act = Action(match_id=match_id, player_id=player.id, action_type=action_type, minute=minute)
-            session.add(act)
-            session.commit()
-            await update.message.reply_text(f"✅ Записано: {player.full_name} - {action_type}")
-        else:
-            await update.message.reply_text(f"⚠️ Игрок с никнеймом '{nickname}' не найден.")
 
+    nickname = parts[0].strip()
+    actions_str = parts[1].strip()
+
+    with SessionLocal() as session:
+        player = get_player_by_nickname(session, nickname)
+        if not player:
+            await update.message.reply_text(f"⚠️ Игрок '<code>{nickname}</code>' не найден.", parse_mode='HTML')
+            return
+
+        segments = actions_str.split(',')
+        recorded_actions = []
+
+        for seg in segments:
+            seg_clean = seg.strip().lower()
+            if not seg_clean:
+                continue
+
+            # Ищем число (например "2 гола" -> 2)
+            numbers = [int(s) for s in seg_clean.split() if s.isdigit()]
+            count = numbers[0] if numbers else 1
+
+            action_type = None
+            if any(x in seg_clean for x in ["гол", "goal", "g"]):
+                action_type = "goal"
+            elif any(x in seg_clean for x in ["пас", "ассист", "голевая", "assist", "a"]):
+                action_type = "assist"
+
+            if action_type:
+                for _ in range(count):
+                    act = Action(match_id=match_id, player_id=player.id, action_type=action_type, minute=None)
+                    session.add(act)
+                emoji = "⚽" if action_type == "goal" else "🎯"
+                label = "гол(а/ов)" if action_type == "goal" else "пас(а/ов)"
+                recorded_actions.append(f"{emoji} {count} {label}")
+
+        session.commit()
+        if recorded_actions:
+            await update.message.reply_text(
+                f"✅ Успешно записано для <b>{player.full_name}</b>: {', '.join(recorded_actions)}", parse_mode='HTML')
+        else:
+            await update.message.reply_text(
+                "⚠️ Не удалось распознать действия. Используйте слова: гол/пас/ассист/goal/assist.")
 
 # --- Управление турнирными сетками (Админ) ---
 
 async def create_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Админ в ЛС) Создает турнир и автоматически генерирует всю сетку слотов."""
+    """(Админ в ЛС) Создает турнир и автоматически генерирует всю сетку слотов (включая матч за 3-е место)."""
     if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
         return
 
@@ -1503,6 +1774,17 @@ async def create_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
                 session.add(pairing)
 
+        # <<< ДОБАВЛЕНО: Генерация матча за 3-е место в Слот N >>>
+        third_place_pairing = TournamentPairing(
+            tournament_id=t.id,
+            slot_id=num_players,
+            stage="МАТЧ_ЗА_3_МЕСТО",
+            captain_a_id=None,
+            captain_b_id=None,
+            is_completed=False
+        )
+        session.add(third_place_pairing)
+
         session.commit()
 
         info_notice = ""
@@ -1511,7 +1793,7 @@ async def create_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text(
             f"✅ {info_notice}Турнир <b>{name}</b> успешно создан (ID: {t.id}, формат: {fmt}).\n"
-            f"Сгенерировано <b>{num_players - 1}</b> пустых слотов сетки.",
+            f"Сгенерировано <b>{num_players}</b> пустых слотов сетки (включая матч за 3-е место).",
             parse_mode='HTML'
         )
 
@@ -1520,8 +1802,6 @@ async def add_pairing(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Админ в ЛС) Обновляет капитанов или вносит результат в уже сгенерированный Слот сетки."""
     if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
         return
-
-    print(context.args)
 
     if len(context.args) < 5:
         await update.message.reply_text(
@@ -1643,7 +1923,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Сетка турнира <b>{t.name}</b> пока пуста.", parse_mode='HTML')
             return
 
-        N = len(pairings) + 1
+        N = len(pairings)
 
         def fmt_slot(p):
             name_a = get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a')
@@ -1695,6 +1975,12 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg += f"  • {fmt_slot(p)}\n"
             msg += "\n"
 
+        # Отдельный красивый вывод Матча за 3-е место (Слот N)
+        third_p = next((x for x in pairings if x.slot_id == N), None)
+        if third_p:
+            msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
+            msg += f"  • {fmt_slot(third_p)}\n"
+
         await update.message.reply_text(msg, parse_mode='HTML')
 
 
@@ -1721,6 +2007,37 @@ async def close_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
         t.is_active = False
         session.commit()
         await update.message.reply_text(f"✅ Турнир <b>{t.name}</b> переведен в архив (завершен).", parse_mode='HTML')
+
+
+# --- Логика архива призеров (Зал Славы) ---
+
+async def tournament_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Для всех) Показывает архив победителей всех завершенных турниров."""
+    with SessionLocal() as session:
+        results = session.query(TournamentResult).order_by(TournamentResult.completed_at.desc()).all()
+        if not results:
+            await update.message.reply_text("В Зале славы пока нет завершенных кубков.")
+            return
+
+        msg = "🏆 <b>Зал славы футбольного сообщества «Футболямба»:</b>\n\n"
+        for r in results:
+            t = r.tournament
+            p1 = session.query(Player).filter_by(tg_id=r.first_place_id).first()
+            p2 = session.query(Player).filter_by(tg_id=r.second_place_id).first()
+            p3 = session.query(Player).filter_by(tg_id=r.third_place_id).first()
+
+            name_1 = p1.full_name if p1 else "Неизвестно"
+            name_2 = p2.full_name if p2 else "Неизвестно"
+            name_3 = p3.full_name if p3 else "Неизвестно"
+
+            msg += (
+                f"🛡 <b>Турнир «{t.name}»</b>:\n"
+                f"  🥇 Золото (1-е место): <b>{name_1}</b>\n"
+                f"  🥈 Серебро (2-е место): <b>{name_2}</b>\n"
+                f"  🥉 Бронза (3-е место): <b>{name_3}</b>\n"
+                f"  📅 Дата триумфа: <i>{r.completed_at.strftime('%d.%m.%Y')}</i>\n\n"
+            )
+        await update.message.reply_text(msg, parse_mode='HTML')
 
 
 # --- Публичные лидерборды ---
@@ -1878,6 +2195,8 @@ async def post_init(application) -> None:
         BotCommand("top_winners", "👑 Топ-5 победителей"),
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку турнира"),
+        BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
+        BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
     ]
     await application.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
 
@@ -1890,23 +2209,30 @@ async def post_init(application) -> None:
         BotCommand("player_form", "📈 Форма игрока (последние игры)"),
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку конкретного турнира"),
+        BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
+        BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
     ]
     await application.bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
 
     admin_commands = [
         BotCommand("help", "👑 Меню администрирования"),
         BotCommand("plan_match", "📅 Запланировать матч (опрос)"),
+        BotCommand("register", "✍️ Быстрая регистрация"),
         BotCommand("list_planned", "📋 Список запланированных матчей"),
         BotCommand("create_match", "⚽ Создать матч на основе опроса"),
         BotCommand("list_active_matches", "⚠️ Список активных игр"),
         BotCommand("create_tournament", "🏆 Создать турнир (<Имя> <BO1/BO2> <Игроки>)"),
-        BotCommand("add_pairing", "➕ Изменить/наполнить ячейку сетки"),
+        BotCommand("add_pairing", "➕ Добавить пару в турнирную сетку"),
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку турнира"),
         BotCommand("close_tournament", "🔒 Архивировать турнир"),
         BotCommand("my_profile", "👤 Профиль"),
         BotCommand("my_stats", "📊 Моя детальная статистика"),
         BotCommand("edit_profile", "🛠 Настройка профиля"),
+        BotCommand("add_player", "➕ Зарегистрировать игрока без Telegram"),
+        BotCommand("list_players", "👥 Список всех зарегистрированных игроков"),
+        BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
+        BotCommand("add_tournament_result", "🏆 Занести призеров турнира в Зал Славы")
     ]
     for admin_id in ADMIN_IDS:
         try:
@@ -1914,6 +2240,171 @@ async def post_init(application) -> None:
         except Exception as e:
             logger.warning(f"Не удалось установить персональные команды для админа {admin_id}: {e}")
 
+
+# --- ЧАСТЬ 3. НОВЫЙ ФУНКЦИОНАЛ ДЛЯ РАБОТЫ С ИГРОКАМИ ---
+
+async def add_player_by_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /add_player <Никнейм> <Имя Фамилия> - Принудительно регистрирует игрока без TG ID."""
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
+    args = context.args
+    if len(args) < 2:
+        await update.message.reply_text(
+            "⚠️ <b>Неверный формат команды.</b>\n\n"
+            "Используйте:\n<code>/add_player &lt;Никнейм&gt; &lt;Имя Фамилия&gt;</code>\n\n"
+            "Пример:\n<code>/add_player Buba Буба</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    nickname, full_name = args[0], " ".join(args[1:])
+    if len(nickname.split()) > 1:
+        await update.message.reply_text("❌ Ошибка: Никнейм должен быть одним словом (желательно латиницей).")
+        return
+
+    with SessionLocal() as session:
+        if get_player_by_nickname(session, nickname):
+            await update.message.reply_text(f"❌ Игрок с никнеймом '<code>{nickname}</code>' уже существует.",
+                                            parse_mode='HTML')
+            return
+
+        # tg_id=None и tg_username=None для игроков без Telegram
+        player = Player(tg_id=None, tg_username=None, nickname=nickname, full_name=full_name)
+        session.add(player)
+        session.commit()
+        await update.message.reply_text(
+            f"✅ <b>Виртуальный игрок успешно добавлен!</b>\n\n"
+            f"• Никнейм для ввода: <code>{nickname}</code>\n"
+            f"• Имя отображения: <b>{full_name}</b>\n\n"
+            f"Теперь его можно добавлять в турнирные сетки и указывать при создании матчей.",
+            parse_mode='HTML'
+        )
+
+
+async def list_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /list_players - Выводит полный список всех зарегистрированных игроков."""
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
+    with SessionLocal() as session:
+        players = session.query(Player).order_by(Player.full_name.asc()).all()
+        if not players:
+            await update.message.reply_text("В системе пока нет зарегистрированных игроков.")
+            return
+
+        msg = f"👥 <b>Зарегистрированные игроки сообщества ({len(players)} чел.):</b>\n\n"
+        for p in players:
+            tg_info = f"(@{p.tg_username})" if p.tg_username else "<i>(без ТГ)</i>"
+            msg += f"• <b>{p.full_name}</b> — Никнейм: <code>{p.nickname}</code> {tg_info}\n"
+
+        # Защита от лимита длины сообщения в Telegram (4096 символов)
+        if len(msg) > 4000:
+            for i in range(0, len(msg), 4000):
+                await update.message.reply_text(msg[i:i + 4000], parse_mode='HTML')
+        else:
+            await update.message.reply_text(msg, parse_mode='HTML')
+
+
+async def search_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Для всех в ЛС и Группах) /search_player <запрос> - Поиск игрока по никнейму, имени или юзернейму."""
+    if not context.args:
+        await update.message.reply_text(
+            "Использование: <code>/search_player &lt;запрос&gt;</code>\n"
+            "Пример: <code>/search_player goga</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    query = " ".join(context.args)
+    with SessionLocal() as session:
+        players = find_players(session, query)
+        if not players:
+            await update.message.reply_text(f"🔍 По запросу «{query}» совпадений не найдено.")
+            return
+
+        msg = f"🔍 <b>Результаты поиска по запросу «{query}» ({len(players)}):</b>\n\n"
+        for p in players:
+            tg_info = f"(@{p.tg_username})" if p.tg_username else "<i>(без ТГ)</i>"
+            msg += f"• <b>{p.full_name}</b> — Никнейм: <code>{p.nickname}</code> {tg_info}\n"
+
+        await update.message.reply_text(msg, parse_mode='HTML')
+
+
+async def add_tournament_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /add_tournament_result <ID_турнира> <Ник_1> [Ник_2] [Ник_3]"""
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ <b>Неверный формат.</b> Используйте:\n"
+            "<code>/add_tournament_result &lt;ID_турнира&gt; &lt;Ник_1-го&gt; [Ник_2-го] [Ник_3-го]</code>\n\n"
+            "Примеры:\n"
+            "• Все призеры: <code>/add_tournament_result 1 Andro Lysyy Torokh</code>\n"
+            "• Только чемпион: <code>/add_tournament_result 2 Sanek2 none none</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    try:
+        t_id = int(context.args[0])
+        nick_1 = context.args[1]
+        nick_2 = context.args[2] if len(context.args) > 2 else 'none'
+        nick_3 = context.args[3] if len(context.args) > 3 else 'none'
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка: ID турнира должен быть числом.")
+        return
+
+    with SessionLocal() as session:
+        t = session.get(Tournament, t_id)
+        if not t:
+            await update.message.reply_text(f"❌ Турнир с ID {t_id} не найден.")
+            return
+
+        p1 = get_player_by_nickname(session, nick_1) if nick_1.lower() not in ['none', '?', 'tbd'] else None
+        p2 = get_player_by_nickname(session, nick_2) if nick_2.lower() not in ['none', '?', 'tbd'] else None
+        p3 = get_player_by_nickname(session, nick_3) if nick_3.lower() not in ['none', '?', 'tbd'] else None
+
+        if nick_1.lower() not in ['none', '?', 'tbd'] and not p1:
+            await update.message.reply_text(f"❌ Игрок '{nick_1}' не найден в БД.")
+            return
+        if nick_2.lower() not in ['none', '?', 'tbd'] and not p2:
+            await update.message.reply_text(f"❌ Игрок '{nick_2}' не найден в БД.")
+            return
+        if nick_3.lower() not in ['none', '?', 'tbd'] and not p3:
+            await update.message.reply_text(f"❌ Игрок '{nick_3}' не найден в БД.")
+            return
+
+        # Проверяем, нет ли уже занесенных результатов по этому турниру
+        existing = session.query(TournamentResult).filter_by(tournament_id=t.id).first()
+        if existing:
+            await update.message.reply_text(f"❌ Результаты для турнира #{t_id} уже внесены.")
+            return
+
+        res = TournamentResult(
+            tournament_id=t.id,
+            first_place_id=p1.tg_id if p1 else None,
+            second_place_id=p2.tg_id if p2 else None,
+            third_place_id=p3.tg_id if p3 else None
+        )
+        session.add(res)
+
+        # Переводим турнир в статус завершенного (архив)
+        t.is_active = False
+        session.commit()
+
+        name_1 = p1.full_name if p1 else "Неизвестно"
+        name_2 = p2.full_name if p2 else "Неизвестно"
+        name_3 = p3.full_name if p3 else "Неизвестно"
+
+        await update.message.reply_text(
+            f"✅ <b>Результаты турнира «{t.name}» внесены в Зал Славы!</b>\n\n"
+            f"🥇 Золото: <b>{name_1}</b>\n"
+            f"🥈 Серебро: <b>{name_2}</b>\n"
+            f"🥉 Бронза: <b>{name_3}</b>",
+            parse_mode='HTML'
+        )
 
 def build_app():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(post_init).build()
@@ -1944,7 +2435,6 @@ def build_app():
         states={
             SELECT_PLAN: [CallbackQueryHandler(create_match_select_plan, pattern=r'^plan:')],
             SELECT_MATCH_TYPE: [CallbackQueryHandler(create_match_select_type, pattern=r'^match_type:')],
-
             CHOOSE_CAPTAIN_A: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_player_search_query),
                 CallbackQueryHandler(handle_player_selection_callback, pattern=r'^select_player:'),
@@ -1953,7 +2443,6 @@ def build_app():
                 MessageHandler(filters.TEXT & ~filters.COMMAND, handle_player_search_query),
                 CallbackQueryHandler(handle_player_selection_callback, pattern=r'^select_player:'),
             ],
-
             SELECT_REMATCH: [CallbackQueryHandler(choose_friendly_rematch, pattern=r'^friendly_rematch:')],
             CHOOSE_TOURNAMENT_PAIRING: [
                 CallbackQueryHandler(choose_tournament_pairing, pattern=r'^select_tour_pairing:')],
@@ -1981,6 +2470,8 @@ def build_app():
     app.add_handler(CommandHandler("top_winners", top_winners))
     app.add_handler(CommandHandler("list_tournaments", list_tournaments))
     app.add_handler(CommandHandler("view_bracket", view_bracket))
+    app.add_handler(CommandHandler("tournament_history", tournament_history))
+    app.add_handler(CommandHandler("search_player", search_player_command))
 
     # 3. Личные сообщения (Игроки)
     app.add_handler(CommandHandler("register", register_player))
@@ -1998,6 +2489,9 @@ def build_app():
     app.add_handler(CommandHandler("close_tournament", close_tournament))
     app.add_handler(CommandHandler("list_active_matches", list_active_matches))
     app.add_handler(CommandHandler("cancel_match", cancel_match_by_id))
+    app.add_handler(CommandHandler("add_player", add_player_by_admin))
+    app.add_handler(CommandHandler("list_players", list_players))
+    app.add_handler(CommandHandler("add_tournament_result", add_tournament_result))
 
     # 5. Команды для капитанов
     app.add_handler(CommandHandler("rps", rps_command))
@@ -2007,6 +2501,7 @@ def build_app():
     app.add_handler(CallbackQueryHandler(give_step1_callback, pattern=r'^give_step1:'))
     app.add_handler(CallbackQueryHandler(give_step2_callback, pattern=r'^give_step2:'))
     app.add_handler(CallbackQueryHandler(choose_from_pair_callback, pattern=r'^choose_from_pair:'))
+    app.add_handler(CallbackQueryHandler(color_choice_callback, pattern=r'^color_choice:'))
 
     # 7. Системное
     app.add_handler(PollAnswerHandler(handle_poll_answer))
