@@ -1,0 +1,10 @@
+# Файл: requirements.txt
+
+# Для взаимодействия с Telegram API
+python-telegram-bot[ext]
+
+# ORM для работы с базой данных (объектно-реляционное отображение)
+sqlalchemy
+
+# Драйвер для подключения Python к базе данных PostgreSQL
+psycopg2-binary
