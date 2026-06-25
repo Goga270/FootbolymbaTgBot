@@ -38,6 +38,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return
+
     chat_type = update.effective_chat.type
     user_id = update.effective_user.id
     is_admin = user_id in ADMIN_IDS
@@ -310,6 +313,15 @@ def ensure_no_active_match(session: Session):
         )
 
 
+async def check_group_admin_permissions(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Проверяет, является ли отправитель администратором группы. В ЛС всегда возвращает True."""
+    chat = update.effective_chat
+    if chat.type == 'private':
+        return True
+
+    user_id = update.effective_user.id
+    return user_id in ADMIN_IDS
+
 def get_player_stats(session: Session, player: Player):
     stats = {"matches": 0, "wins": 0, "losses": 0, "goals": 0, "assists": 0, "win_streak": 0}
 
@@ -356,6 +368,7 @@ async def get_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
         return
+
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
@@ -470,6 +483,8 @@ async def handle_player_selection_callback(update: Update, context: ContextTypes
 
 
 async def plan_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return ConversationHandler.END
     if update.effective_user.id not in ADMIN_IDS:
         return ConversationHandler.END
 
@@ -523,6 +538,9 @@ async def plan_match_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE
 # --- Логика профиля игрока ---
 
 async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return
+
     with SessionLocal() as session:
         player = get_player_by_tgid(session, update.effective_user.id)
         if not player:
@@ -544,7 +562,6 @@ async def my_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def edit_profile_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type != 'private':
-        await update.message.reply_text("⚠️ Редактировать профиль можно только в личных сообщениях с ботом.")
         return ConversationHandler.END
 
     with SessionLocal() as session:
@@ -1883,6 +1900,8 @@ async def add_pairing(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return
     """(Для всех) Вывод списка турниров."""
     with SessionLocal() as session:
         tournaments = session.query(Tournament).all()
@@ -1899,6 +1918,9 @@ async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_admin_permissions(update, context):
+        return
+
     """(Для всех) Вывод сетки матчей турнира."""
     if not context.args:
         await update.message.reply_text("Использование: <code>/view_bracket &lt;ID_турнира&gt;</code>",
@@ -2011,6 +2033,9 @@ async def close_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Логика архива призеров (Зал Славы) ---
 
 async def tournament_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_chat.type != 'private':
+        return
+
     """(Для всех) Показывает архив победителей всех завершенных турниров."""
     with SessionLocal() as session:
         results = session.query(TournamentResult).order_by(TournamentResult.completed_at.desc()).all()
@@ -2060,24 +2085,36 @@ async def post_leaderboard_public(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def top_scorers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_admin_permissions(update, context):
+        return
+
     with SessionLocal() as session:
         top_data = get_top_scorers_or_assisters(session, action_type='goal', limit=5)
     await post_leaderboard_public(update, context, "🏆 <b>Топ-5 бомбардиров сообщества</b>", top_data, "голов")
 
 
 async def top_assisters(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_admin_permissions(update, context):
+        return
+
     with SessionLocal() as session:
         top_data = get_top_scorers_or_assisters(session, action_type='assist', limit=5)
     await post_leaderboard_public(update, context, "🎯 <b>Топ-5 ассистентов сообщества</b>", top_data, "ассистов")
 
 
 async def top_frequent_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_admin_permissions(update, context):
+        return
+
     with SessionLocal() as session:
         top_data = get_top_most_frequent_players(session, limit=10)
     await post_leaderboard_public(update, context, "🏃‍♂️ <b>Топ-10 самых активных игроков</b>", top_data, "матчей")
 
 
 async def top_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_group_admin_permissions(update, context):
+        return
+
     with SessionLocal() as session:
         top_data = get_top_winners(session, limit=5)
     await post_leaderboard_public(update, context, "👑 <b>Топ-5 победителей</b>", top_data, "побед")
@@ -2184,20 +2221,10 @@ async def my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Настройка подсказок команд Telegram ---
 
 async def post_init(application) -> None:
-    from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeChat
+    from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats, BotCommandScopeChat, BotCommandScopeAllChatAdministrators, BotCommandScopeChatMember
 
-    group_commands = [
-        BotCommand("help", "📖 Справка по командам группы"),
-        BotCommand("top_scorers", "🏆 Топ-5 бомбардиров"),
-        BotCommand("top_assisters", "🎯 Топ-5 ассистентов"),
-        BotCommand("top_frequent", "🏃‍♂️ Топ-10 активных игроков"),
-        BotCommand("top_winners", "👑 Топ-5 победителей"),
-        BotCommand("list_tournaments", "📊 Список всех турниров"),
-        BotCommand("view_bracket", "👀 Показать сетку турнира"),
-        BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
-        BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
-    ]
-    await application.bot.set_my_commands(group_commands, scope=BotCommandScopeAllGroupChats())
+    await application.bot.set_my_commands([], scope=BotCommandScopeAllGroupChats())
+    await application.bot.set_my_commands([], scope=BotCommandScopeAllChatAdministrators())
 
     private_commands = [
         BotCommand("help", "📖 Справка по командам бота"),
@@ -2206,17 +2233,37 @@ async def post_init(application) -> None:
         BotCommand("my_stats", "📊 Моя детальная статистика"),
         BotCommand("edit_profile", "🛠 Редактировать профиль"),
         BotCommand("player_form", "📈 Форма игрока (последние игры)"),
+        BotCommand("top_scorers", "🏆 Топ-5 бомбардиров"),
+        BotCommand("top_assisters", "🎯 Топ-5 ассистентов"),
+        BotCommand("top_frequent", "🏃‍♂️ Топ-10 активных игроков"),
+        BotCommand("top_winners", "👑 Топ-5 победителей"),
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку конкретного турнира"),
         BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
-        BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
     ]
     await application.bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
 
-    admin_commands = [
+    group_admin_commands = [
+        BotCommand("top_scorers", "🏆 Топ-5 бомбардиров"),
+        BotCommand("top_assisters", "🎯 Топ-5 ассистентов"),
+        BotCommand("top_frequent", "🏃‍♂️ Топ-10 активных игроков"),
+        BotCommand("top_winners", "👑 Топ-5 победителей"),
+        BotCommand("view_bracket", "👀 Показать сетку турнира"),
+    ]
+
+    if TARGET_GROUP_ID:
+        for admin_id in ADMIN_IDS:
+            try:
+                await application.bot.set_my_commands(
+                    group_admin_commands,
+                    scope=BotCommandScopeChatMember(chat_id=TARGET_GROUP_ID, user_id=admin_id)
+                )
+            except Exception as e:
+                logger.warning(f"Не удалось установить подсказки в группе для админа {admin_id}: {e}")
+
+    admin_private_commands = [
         BotCommand("help", "👑 Меню администрирования"),
         BotCommand("plan_match", "📅 Запланировать матч (опрос)"),
-        BotCommand("register", "✍️ Быстрая регистрация"),
         BotCommand("list_planned", "📋 Список запланированных матчей"),
         BotCommand("create_match", "⚽ Создать матч на основе опроса"),
         BotCommand("list_active_matches", "⚠️ Список активных игр"),
@@ -2225,17 +2272,24 @@ async def post_init(application) -> None:
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку турнира"),
         BotCommand("close_tournament", "🔒 Архивировать турнир"),
-        BotCommand("my_profile", "👤 Профиль"),
-        BotCommand("my_stats", "📊 Моя детальная статистика"),
-        BotCommand("edit_profile", "🛠 Настройка профиля"),
+        BotCommand("add_tournament_result", "🏆 Занести призеров турнира в Зал Славы"),
         BotCommand("add_player", "➕ Зарегистрировать игрока без Telegram"),
         BotCommand("list_players", "👥 Список всех зарегистрированных игроков"),
         BotCommand("search_player", "🔍 Поиск игрока по никнейму или имени"),
-        BotCommand("add_tournament_result", "🏆 Занести призеров турнира в Зал Славы")
+        BotCommand("register", "✍️ Быстрая регистрация"),
+        BotCommand("my_profile", "👤 Просмотр профиля"),
+        BotCommand("my_stats", "📊 Моя детальная статистика"),
+        BotCommand("edit_profile", "🛠 Редактировать профиль"),
+        BotCommand("player_form", "📈 Форма игрока (последние игры)"),
+        BotCommand("top_scorers", "🏆 Топ-5 бомбардиров"),
+        BotCommand("top_assisters", "🎯 Топ-5 ассистентов"),
+        BotCommand("top_frequent", "🏃‍♂️ Топ-10 активных игроков"),
+        BotCommand("top_winners", "👑 Топ-5 победителей"),
+        BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
     ]
     for admin_id in ADMIN_IDS:
         try:
-            await application.bot.set_my_commands(admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+            await application.bot.set_my_commands(admin_private_commands, scope=BotCommandScopeChat(chat_id=admin_id))
         except Exception as e:
             logger.warning(f"Не удалось установить персональные команды для админа {admin_id}: {e}")
 
@@ -2306,6 +2360,9 @@ async def list_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def search_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
     """(Для всех) /search_player <запрос> - Поиск игрока по никнейму, имени или юзернейму."""
     if not context.args:
         await update.message.reply_text(
