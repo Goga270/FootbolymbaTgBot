@@ -597,11 +597,11 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         msg = "⚽ <b>Список всех матчей сообщества Футболямба:</b>\n\n"
         for m in matches:
-            cap_a = session.get(Player, m.captain_a_id) if m.captain_a_id else None
-            cap_b = session.get(Player, m.captain_b_id) if m.captain_b_id else None
+            cap_a = get_player_by_tgid(session, m.captain_a_id) if m.captain_a_id else None
+            cap_b = get_player_by_tgid(session, m.captain_b_id) if m.captain_b_id else None
 
-            name_a = escape(cap_a.nickname) if cap_a else "Неизвестно"
-            name_b = escape(cap_b.nickname) if cap_b else "Неизвестно"
+            name_a = escape(cap_a.full_name) if cap_a else "Неизвестно"
+            name_b = escape(cap_b.full_name) if cap_b else "Неизвестно"
 
             # Турнирная информация (если матч из турнира)
             tour_info = ""
