@@ -170,29 +170,32 @@ def get_player_by_tgid(session: Session, tg_id: int) -> Optional[Player]:
 
 
 def get_top_scorers_or_assisters(session: Session, action_type: str, limit: int = 5) -> List[tuple[Player, int]]:
+    """Возвращает рейтинг бомбардиров или ассистентов (сортировка по очкам, затем по алфавиту ФИО) [2]."""
     return session.query(
         Player,
         func.count(Action.id).label('count')
     ).join(Action, Player.id == Action.player_id) \
         .filter(Action.action_type == action_type) \
         .group_by(Player.id) \
-        .order_by(func.count(Action.id).desc()) \
+        .order_by(func.count(Action.id).desc(), Player.full_name.asc()) \
         .limit(limit) \
         .all()
 
 
 def get_top_most_frequent_players(session: Session, limit: int = 10) -> List[tuple[Player, int]]:
+    """Возвращает рейтинг самых активных игроков (сортировка по матчам, затем по алфавиту ФИО) [2]."""
     return session.query(
         Player,
         func.count(match_players_table.c.match_id).label('match_count')
     ).join(match_players_table, Player.id == match_players_table.c.player_id) \
         .group_by(Player.id) \
-        .order_by(func.count(match_players_table.c.match_id).desc()) \
+        .order_by(func.count(match_players_table.c.match_id).desc(), Player.full_name.asc()) \
         .limit(limit) \
         .all()
 
 
 def get_top_winners(session: Session, limit: int = 5) -> List[tuple[Player, int]]:
+    """Возвращает рейтинг по числу побед (сортировка по победам, затем по алфавиту ФИО) [2]."""
     all_players = session.query(Player).all()
     player_wins = []
 
@@ -213,5 +216,6 @@ def get_top_winners(session: Session, limit: int = 5) -> List[tuple[Player, int]
         if wins > 0:
             player_wins.append((player, wins))
 
-    player_wins.sort(key=lambda item: item[1], reverse=True)
+    # Сортируем: сначала по победам DESC (минус перед wins), затем по полному имени ASC [2]
+    player_wins.sort(key=lambda item: (-item[1], item[0].full_name.lower()))
     return player_wins[:limit]

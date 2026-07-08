@@ -317,9 +317,12 @@ def get_player_stats(session: Session, player: Player):
     stats['win_streak'] = current_streak
     return stats
 
+
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer, user = update.poll_answer, update.poll_answer.user
-    if answer.option_ids and answer.option_ids[0] == 0:
+
+    # 1. Авто-регистрация при нажатии на ЛЮБОЙ вариант ответа (даже "Не иду") [2]
+    if answer.option_ids:
         with SessionLocal() as session:
             if not get_player_by_tgid(session, user.id):
                 nickname = user.username if user.username else f"user{user.id}"
@@ -329,7 +332,10 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                     nickname=nickname)
                 session.add(new_player)
                 session.commit()
-                logger.info(f"Автоматическая регистрация: {new_player.full_name} ({nickname})")
+                logger.info(f"Автоматическая регистрация при любом голосовании: {new_player.full_name} ({nickname})")
+
+    # 2. Учет только тех, кто реально идет на игру (первая опция в опросе) [2]
+    if answer.option_ids and answer.option_ids[0] == 0:
         if planned_match := next(
                 (m for m in context.bot_data.get("planned_matches", []) if m["poll_id"] == answer.poll_id), None):
             planned_match["players"].add(user.id)
@@ -654,8 +660,8 @@ async def cancel_match_by_id(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(f"✅ Матч №{match_id} успешно отменен. Статус изменен на `CANCELLED`.")
 
 async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Для всех) /list_matches - Показывает список всех матчей в системе и их результаты."""
-    if update.effective_chat.type != 'private':
+    """(Для всех) Вывод списка последних матчей с защитой от лимитов длинных списков."""
+    if not await check_group_admin_permissions(update, context):
         return
 
     limit = 10
@@ -680,21 +686,21 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("В системе пока нет созданных матчей.")
             return
 
-        msg = "⚽ <b>Список всех матчей сообщества Футболямба:</b>\n\n"
+        header = f"⚽ <b>Последние {len(matches)} матчей сообщества Футболямба:</b>\n\n"
+
+        lines = []
         for m in matches:
             cap_a = get_player_by_tgid(session, m.captain_a_id) if m.captain_a_id else None
             cap_b = get_player_by_tgid(session, m.captain_b_id) if m.captain_b_id else None
 
-            name_a = escape(cap_a.full_name or '') if cap_a else "Неизвестно"
-            name_b = escape(cap_b.full_name or '') if cap_b else "Неизвестно"
+            name_a = escape(cap_a.full_name) if cap_a else "Неизвестно"
+            name_b = escape(cap_b.full_name) if cap_b else "Неизвестно"
 
-            # Турнирная информация (если матч из турнира)
             tour_info = ""
             if m.tournament_pairing_id:
                 pairing = m.pairing
-                tour_info = f" (🏆 <b>{escape(pairing.tournament.name or '')}</b> | {escape(pairing.stage or '')})"
+                tour_info = f" (🏆 <b>{escape(pairing.tournament.name)}</b> | {escape(pairing.stage)})"
 
-            # Форматируем статус / счет
             status_text = ""
             if m.status == MatchStatus.FINISHED:
                 status_text = f"✅ Завершен (Счет: <b>{m.score_a} - {m.score_b}</b>)"
@@ -707,14 +713,25 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif m.status == MatchStatus.CANCELLED:
                 status_text = "❌ Отменен"
 
-            msg += f"• <b>Матч №{m.id}</b>{tour_info}\n  Капитаны: <i>{name_a} vs {name_b}</i>\n  Статус: {status_text}\n\n"
+            lines.append(
+                f"• <b>Матч №{m.id}</b>{tour_info}\n  Капитаны: <i>{name_a} vs {name_b}</i>\n  Статус: {status_text}\n")
 
-        # Защита от лимита длины сообщения в Telegram (4096 символов)
-        if len(msg) > 4000:
-            for i in range(0, len(msg), 4000):
-                await update.message.reply_text(msg[i:i + 4000], parse_mode='HTML')
+        current_msg = header
+        for line in lines:
+            if len(current_msg) + len(line) + 1 > 4000:
+                await update.message.reply_text(current_msg, parse_mode='HTML')
+                current_msg = ""
+            current_msg += line + "\n"
+
+        footer = f"<i>Вы можете запросить другое количество матчей, например:</i> <code>/list_matches 5</code>"
+        if len(current_msg) + len(footer) + 1 > 4000:
+            await update.message.reply_text(current_msg, parse_mode='HTML')
+            current_msg = footer
         else:
-            await update.message.reply_text(msg, parse_mode='HTML')
+            current_msg += footer
+
+        if current_msg:
+            await update.message.reply_text(current_msg, parse_mode='HTML')
 
 
 # --- Логика поиска игроков ---
@@ -784,7 +801,7 @@ async def plan_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['plan_info'] = {}
     await update.message.reply_text(
         "📅 <b>Планирование матча.</b>\n\n"
-        "Шаг 1 из 2: Введите место проведения матча (например, Фили или Лужники №6):",
+        "Шаг 1 из 2: Введите место проведения матча (например, Фили или Лужники поле №6):",
         parse_mode='HTML'
     )
     return PLAN_FIELD
@@ -792,7 +809,7 @@ async def plan_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def plan_match_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['plan_info']['field'] = update.message.text.strip()
     await update.message.reply_text(
-        "Шаг 2 из 2: Введите дату и время матча по МСК (например, 25 мая в 19:30):",
+        "Шаг 2 из 2: Введите дату и время матча по МСК, в формате 25.06.2026:",
         parse_mode='HTML'
     )
     return PLAN_DATETIME
@@ -802,7 +819,7 @@ async def plan_match_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE
     plan_info = context.user_data.pop('plan_info')
     field = plan_info['field']
 
-    announcement = f"Вы играете {dt_text} на поле {field}. Идёте?"
+    announcement = f"Вы играете {dt_text} ? \n Поле: {field}"
 
     try:
         poll_message = await context.bot.send_poll(
@@ -2221,10 +2238,10 @@ async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='HTML')
 
 async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Для всех) Вывод сетки матчей турнира в виде красивой PNG-картинки и текста."""
     if not await check_group_admin_permissions(update, context):
         return
 
-    """(Для всех) Вывод сетки матчей турнира."""
     if not context.args:
         await update.message.reply_text("Использование: <code>/view_bracket &lt;ID_турнира&gt;</code>",
                                         parse_mode='HTML')
@@ -2247,7 +2264,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Сетка турнира <b>{t.name}</b> пока пуста.", parse_mode='HTML')
             return
 
-        N = len(pairings)
+        N = len(pairings)  # Слот N - матч за 3-е место, N-1 - финал
 
         def fmt_slot(p):
             name_a = get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a')
@@ -2279,19 +2296,15 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             2: "1/4 ЧЕТВЕРТЬФИНАЛЫ",
             3: "1/8 ФИНАЛА",
             4: "1/16 ФИНАЛА",
-            5: "1/32 ФИНАЛА",
-            6: "1/64 ФИНАЛА",
-            7: "1/128 ФИНАЛА"
+            5: "1/32 ФИНАЛА"
         }
 
+        # Генерируем текстовую версию
         msg = f"🏆 <b>Турнирная сетка кубка: {t.name} ({t.match_format})</b> 🏆\n\n"
-
         for r_idx, r in enumerate(rounds):
             dist = total_rounds - 1 - r_idx
             stage_title = STAGE_MAP.get(dist, f"РАУНД {r_idx + 1}").upper()
-
             msg += f"🏁 <b>{stage_title}:</b>\n"
-
             for i in range(1, r["count"] + 1):
                 slot_id = r["offset"] + i
                 p = next((x for x in pairings if x.slot_id == slot_id), None)
@@ -2299,13 +2312,128 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     msg += f"  • {fmt_slot(p)}\n"
             msg += "\n"
 
-        # Отдельный красивый вывод Матча за 3-е место (Слот N)
         third_p = next((x for x in pairings if x.slot_id == N), None)
         if third_p:
             msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
             msg += f"  • {fmt_slot(third_p)}\n"
 
-        await update.message.reply_text(msg, parse_mode='HTML')
+        # --- ГЕНЕРАЦИЯ КРАСИВОЙ КАРТИНКИ (PILLOW) --- [2]
+        try:
+            import io
+            from PIL import Image, ImageDraw, ImageFont
+
+            # Настройки размеров
+            col_width = 240
+            col_gap = 60
+            box_width = 200
+            box_height = 60
+
+            img_width = col_gap + (total_rounds * (col_width + col_gap)) + 200
+            img_height = (N // 2) * 100 + 150
+            if img_height < 500:
+                img_height = 500
+
+            img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Темная тема
+            draw = ImageDraw.Draw(img)
+
+            # Попытка загрузить шрифты, иначе дефолтный
+            try:
+                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
+                font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+            except IOError:
+                font = ImageFont.load_default()
+                font_title = ImageFont.load_default()
+
+            # Рисуем заголовок
+            draw.text((40, 20), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
+
+            # Считаем координаты всех слотов
+            x_coords = {}
+            y_coords = {}
+
+            # Первый раунд (Round 0)
+            col_x = 50
+            for i in range(N // 2):
+                slot_id = i + 1
+                x_coords[slot_id] = col_x
+                y_coords[slot_id] = 80 + i * 110
+
+            # Последующие раунды
+            for r_idx in range(1, len(rounds)):
+                col_x += col_width + col_gap
+                r = rounds[r_idx]
+                prev_r = rounds[r_idx - 1]
+
+                for i in range(r["count"]):
+                    slot_id = r["offset"] + i + 1
+                    p1_slot = prev_r["offset"] + 2 * i + 1
+                    p2_slot = prev_r["offset"] + 2 * i + 2
+
+                    x_coords[slot_id] = col_x
+                    y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
+
+            # Координата матча за 3-е место (отдельный бокс внизу справа)
+            x_coords[N] = img_width - col_width - 50
+            y_coords[N] = img_height - 120
+
+            # Рисуем соединительные линии [2]
+            for r_idx in range(len(rounds) - 1):
+                r = rounds[r_idx]
+                for i in range(r["count"]):
+                    slot_id = r["offset"] + i + 1
+                    flow = get_next_slot(slot_id, N)
+                    if flow:
+                        next_slot_id, next_side = flow
+                        x_curr = x_coords[slot_id] + box_width
+                        y_curr = y_coords[slot_id] + box_height / 2
+
+                        x_next = x_coords[next_slot_id]
+                        y_next = y_coords[next_slot_id] + (15 if next_side == 'a' else 45)
+
+                        x_mid = (x_curr + x_next) / 2
+                        draw.line([(x_curr, y_curr), (x_mid, y_curr)], fill='#475569', width=2)
+                        draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#475569', width=2)
+                        draw.line([(x_mid, y_next), (x_next, y_next)], fill='#475569', width=2)
+
+            # Рисуем сами ячейки с игроками и счетами [2]
+            for p in pairings:
+                slot_id = p.slot_id
+                x = x_coords[slot_id]
+                y = y_coords[slot_id]
+
+                name_a = get_captain_name_or_placeholder(session, slot_id, t.id, 'a')
+                name_b = get_captain_name_or_placeholder(session, slot_id, t.id, 'b')
+
+                score_text = p.manual_score_text or ""
+                if not score_text:
+                    m_scores = [f"{m.score_a}-{m.score_b}" for m in p.matches if m.status == MatchStatus.FINISHED]
+                    score_text = ", ".join(m_scores) if m_scores else ""
+
+                # Подсветка завершенного слота
+                border_color = '#38bdf8' if p.is_completed else '#475569'
+                box_color = '#1e293b' if p.is_completed else '#0f172a'
+
+                draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
+                                       outline=border_color, width=2)
+                draw.text((x + 10, y + 8), name_a[:18], fill='#f8fafc', font=font)
+                draw.text((x + 10, y + 32), name_b[:18], fill='#f8fafc', font=font)
+
+                if score_text:
+                    draw.text((x + box_width - 45, y + 20), score_text, fill='#f43f5e', font=font)
+
+            # Сохраняем картинку в бинарный буфер и отправляем в ТГ [2]
+            bio = io.BytesIO()
+            bio.name = 'bracket.png'
+            img.save(bio, 'PNG')
+            bio.seek(0)
+
+            await update.message.reply_photo(photo=bio, caption=msg, parse_mode='HTML')
+            return
+
+        except Exception as img_err:
+            logger.error(f"Не удалось сгенерировать графику сетки: {img_err}")
+            # Безопасный фоллбек на текстовый вывод
+            await update.message.reply_text(msg, parse_mode='HTML')
 
 async def close_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
@@ -2512,7 +2640,10 @@ async def post_init(application) -> None:
         BotCommand("list_tournaments", "📊 Список всех турниров"),
         BotCommand("view_bracket", "👀 Показать сетку конкретного турнира"),
         BotCommand("tournament_history", "🏆 Зал славы (архив победителей)"),
-        BotCommand("match_result", "🏁 Показать результат и голы конкретного матча")
+        BotCommand("match_result", "🏁 Показать результат и голы конкретного матча"),
+        BotCommand("list_players", "👥 Список всех зарегистрированных игроков"),
+        BotCommand("list_matches", "⚽ Показать список всех матчей и результаты"),
+        BotCommand("match_rosters", "📋 Посмотреть составы конкретного матча")
     ]
     await application.bot.set_my_commands(private_commands, scope=BotCommandScopeAllPrivateChats())
 
@@ -2614,8 +2745,8 @@ async def add_player_by_admin(update: Update, context: ContextTypes.DEFAULT_TYPE
         )
 
 async def list_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Админ в ЛС) /list_players - Выводит полный список всех зарегистрированных игроков."""
-    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+    """(Админ в ЛС) Выводит полный список всех зарегистрированных игроков с защитой от превышения лимитов."""
+    if not await check_group_admin_permissions(update, context):
         return
 
     with SessionLocal() as session:
@@ -2624,23 +2755,30 @@ async def list_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("В системе пока нет зарегистрированных игроков.")
             return
 
-        msg = f"👥 <b>Зарегистрированные игроки сообщества ({len(players)} чел.):</b>\n\n"
-        for p in players:
-            tg_username_escaped = escape(p.tg_username or '') if p.tg_username else None
-            tg_info = f"(@{tg_username_escaped})" if tg_username_escaped else "<i>(без ТГ)</i>"
-            msg += f"• <b>{escape(p.full_name or '')}</b> — Никнейм: <code>{escape(p.nickname or '')}</code> {tg_info}\n"
+        header = f"👥 <b>Зарегистрированные игроки сообщества ({len(players)} чел.):</b>\n\n"
 
-        if len(msg) > 4000:
-            for i in range(0, len(msg), 4000):
-                await update.message.reply_text(msg[i:i + 4000], parse_mode='HTML')
-        else:
-            await update.message.reply_text(msg, parse_mode='HTML')
+        # 1. Генерируем массив цельных строк (строку нельзя разрывать посередине тегов) [2]
+        lines = []
+        for p in players:
+            tg_username_escaped = escape(p.tg_username) if p.tg_username else None
+            tg_info = f"(@{tg_username_escaped})" if tg_username_escaped else "<i>(без ТГ)</i>"
+            lines.append(f"• <b>{escape(p.full_name)}</b> — Никнейм: <code>{escape(p.nickname)}</code> {tg_info}")
+
+        # 2. Собираем строки в пакеты объемом менее 4000 символов [2]
+        current_msg = header
+        for line in lines:
+            if len(current_msg) + len(line) + 1 > 4000:
+                # Отправляем текущий накопленный безопасный кусок [2]
+                await update.message.reply_text(current_msg, parse_mode='HTML')
+                current_msg = ""
+            current_msg += line + "\n"
+
+        # Отправляем финальный остаток
+        if current_msg:
+            await update.message.reply_text(current_msg, parse_mode='HTML')
 
 async def search_player_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
-        return
-
-    """(Для всех) /search_player <запрос> - Поиск игрока по никнейму, имени или юзернейму."""
+    """(Для всех) Поиск игрока по никнейму, имени или юзернейму с защитой лимитов."""
     if not context.args:
         await update.message.reply_text(
             "Использование: <code>/search_player &lt;запрос&gt;</code>\n"
@@ -2656,13 +2794,23 @@ async def search_player_command(update: Update, context: ContextTypes.DEFAULT_TY
             await update.message.reply_text(f"🔍 По запросу «{query}» совпадений не найдено.")
             return
 
-        msg = f"🔍 <b>Результаты поиска по запросу «{query}» ({len(players)}):</b>\n\n"
-        for p in players:
-            tg_username_escaped = escape(p.tg_username or '') if p.tg_username else None
-            tg_info = f"(@{tg_username_escaped})" if tg_username_escaped else "<i>(без ТГ)</i>"
-            msg += f"• <b>{escape(p.full_name or '')}</b> — Никнейм: <code>{escape(p.nickname or '')}</code> {tg_info}\n"
+        header = f"🔍 <b>Результаты поиска по запросу «{query}» ({len(players)}):</b>\n\n"
 
-        await update.message.reply_text(msg, parse_mode='HTML')
+        lines = []
+        for p in players:
+            tg_username_escaped = escape(p.tg_username) if p.tg_username else None
+            tg_info = f"(@{tg_username_escaped})" if tg_username_escaped else "<i>(без ТГ)</i>"
+            lines.append(f"• <b>{escape(p.full_name)}</b> — Никнейм: <code>{escape(p.nickname)}</code> {tg_info}")
+
+        current_msg = header
+        for line in lines:
+            if len(current_msg) + len(line) + 1 > 4000:
+                await update.message.reply_text(current_msg, parse_mode='HTML')
+                current_msg = ""
+            current_msg += line + "\n"
+
+        if current_msg:
+            await update.message.reply_text(current_msg, parse_mode='HTML')
 
 
 # --- ИНТЕРАКТИВНЫЙ ДЕПЛОЙ ПРОШЕДШИХ МАТЧЕЙ (РУЧНОЙ ВВОД) ---
@@ -2951,7 +3099,6 @@ async def log_match_team_b_players(update: Update, context: ContextTypes.DEFAULT
 
     return ConversationHandler.END
 
-
 async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Админ в ЛС) /add_stats <ID_матча> - Открывает режим ввода статистики для ранее завершенного матча."""
     if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
@@ -2997,6 +3144,7 @@ async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{roster_text}",
             parse_mode='HTML'
         )
+
 
 
 def build_app():
