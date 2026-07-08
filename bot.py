@@ -2261,7 +2261,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pairings = session.query(TournamentPairing).filter_by(tournament_id=t.id).order_by(
             TournamentPairing.slot_id.asc()).all()
         if not pairings:
-            await update.message.reply_text(f"Сетка турнира <b>{t.name}</b> пока пуста.", parse_mode='HTML')
+            await update.message.reply_text(f"Сетка турнира <b>{escape(t.name)}</b> пока пуста.", parse_mode='HTML')
             return
 
         N = len(pairings)  # Слот N - матч за 3-е место, N-1 - финал
@@ -2299,8 +2299,8 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             5: "1/32 ФИНАЛА"
         }
 
-        # Генерируем текстовую версию
-        msg = f"🏆 <b>Турнирная сетка кубка: {t.name} ({t.match_format})</b> 🏆\n\n"
+        # Генерируем подробную текстовую версию
+        msg = f"🏆 <b>Турнирная сетка кубка: {escape(t.name)} ({t.match_format})</b> 🏆\n\n"
         for r_idx, r in enumerate(rounds):
             dist = total_rounds - 1 - r_idx
             stage_title = STAGE_MAP.get(dist, f"РАУНД {r_idx + 1}").upper()
@@ -2317,12 +2317,11 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
             msg += f"  • {fmt_slot(third_p)}\n"
 
-        # --- ГЕНЕРАЦИЯ КРАСИВОЙ КАРТИНКИ (PILLOW) --- [2]
+        # --- ГЕНЕРАЦИЯ КАРТИНКИ (PILLOW) ---
         try:
             import io
             from PIL import Image, ImageDraw, ImageFont
 
-            # Настройки размеров
             col_width = 240
             col_gap = 60
             box_width = 200
@@ -2336,7 +2335,6 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Темная тема
             draw = ImageDraw.Draw(img)
 
-            # Попытка загрузить шрифты, иначе дефолтный
             try:
                 font = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
                 font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
@@ -2344,21 +2342,20 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 font = ImageFont.load_default()
                 font_title = ImageFont.load_default()
 
-            # Рисуем заголовок
+            # Заголовок
             draw.text((40, 20), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
 
-            # Считаем координаты всех слотов
             x_coords = {}
             y_coords = {}
 
-            # Первый раунд (Round 0)
+            # Координаты Round 0
             col_x = 50
             for i in range(N // 2):
                 slot_id = i + 1
                 x_coords[slot_id] = col_x
                 y_coords[slot_id] = 80 + i * 110
 
-            # Последующие раунды
+            # Координаты Round 1...
             for r_idx in range(1, len(rounds)):
                 col_x += col_width + col_gap
                 r = rounds[r_idx]
@@ -2372,11 +2369,10 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     x_coords[slot_id] = col_x
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
-            # Координата матча за 3-е место (отдельный бокс внизу справа)
             x_coords[N] = img_width - col_width - 50
             y_coords[N] = img_height - 120
 
-            # Рисуем соединительные линии [2]
+            # Рисуем соединительные линии
             for r_idx in range(len(rounds) - 1):
                 r = rounds[r_idx]
                 for i in range(r["count"]):
@@ -2395,7 +2391,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#475569', width=2)
                         draw.line([(x_mid, y_next), (x_next, y_next)], fill='#475569', width=2)
 
-            # Рисуем сами ячейки с игроками и счетами [2]
+            # Рисуем ячейки
             for p in pairings:
                 slot_id = p.slot_id
                 x = x_coords[slot_id]
@@ -2409,7 +2405,6 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     m_scores = [f"{m.score_a}-{m.score_b}" for m in p.matches if m.status == MatchStatus.FINISHED]
                     score_text = ", ".join(m_scores) if m_scores else ""
 
-                # Подсветка завершенного слота
                 border_color = '#38bdf8' if p.is_completed else '#475569'
                 box_color = '#1e293b' if p.is_completed else '#0f172a'
 
@@ -2421,18 +2416,20 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if score_text:
                     draw.text((x + box_width - 45, y + 20), score_text, fill='#f43f5e', font=font)
 
-            # Сохраняем картинку в бинарный буфер и отправляем в ТГ [2]
+            # Сохраняем картинку в бинарный буфер
             bio = io.BytesIO()
             bio.name = 'bracket.png'
             img.save(bio, 'PNG')
             bio.seek(0)
 
-            await update.message.reply_photo(photo=bio, caption=msg, parse_mode='HTML')
+            short_caption = f"📊 <b>Сетка турнира «{escape(t.name)}»</b>"
+            await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
+
+            await update.message.reply_text(msg, parse_mode='HTML')
             return
 
         except Exception as img_err:
             logger.error(f"Не удалось сгенерировать графику сетки: {img_err}")
-            # Безопасный фоллбек на текстовый вывод
             await update.message.reply_text(msg, parse_mode='HTML')
 
 async def close_tournament(update: Update, context: ContextTypes.DEFAULT_TYPE):
