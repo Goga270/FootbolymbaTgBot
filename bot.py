@@ -153,7 +153,7 @@ def get_captain_name_or_placeholder(session: Session, slot_id: int, tournament_i
         tg_id = p.captain_a_id if side == 'a' else p.captain_b_id
         if tg_id:
             player = get_player_by_tgid(session, tg_id)
-            return escape(player.nickname or '') if player else f"ID {tg_id}"
+            return escape(player.full_name or '') if player else f"ID {tg_id}"
 
     total_pairings = session.query(TournamentPairing).filter_by(tournament_id=tournament_id).count()
     N = total_pairings
@@ -2317,14 +2317,15 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
             msg += f"  • {fmt_slot(third_p)}\n"
 
-        # --- ГЕНЕРАЦИЯ КАРТИНКИ (PILLOW) ---
+        # --- ГЕНЕРАЦИЯ КРАСИВОЙ КАРТИНКИ (PILLOW) ---
         try:
             import io
             from PIL import Image, ImageDraw, ImageFont
 
-            col_width = 240
+            # Увеличиваем ширину блоков, чтобы Полные Имена (ФИО) красиво помещались [2]
+            col_width = 300
             col_gap = 60
-            box_width = 200
+            box_width = 250
             box_height = 60
 
             img_width = col_gap + (total_rounds * (col_width + col_gap)) + 200
@@ -2335,12 +2336,17 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Темная тема
             draw = ImageDraw.Draw(img)
 
+            # Пытаемся загрузить официальный шрифт DejaVu из установленного в докере пакета [2]
             try:
-                font = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
-                font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
+                font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
             except IOError:
-                font = ImageFont.load_default()
-                font_title = ImageFont.load_default()
+                try:
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 11)
+                    font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+                except IOError:
+                    font = ImageFont.load_default()
+                    font_title = ImageFont.load_default()
 
             # Заголовок
             draw.text((40, 20), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
@@ -2410,8 +2416,8 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
                 draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
                                        outline=border_color, width=2)
-                draw.text((x + 10, y + 8), name_a[:18], fill='#f8fafc', font=font)
-                draw.text((x + 10, y + 32), name_b[:18], fill='#f8fafc', font=font)
+                draw.text((x + 10, y + 8), name_a[:21], fill='#f8fafc', font=font)  # Немного увеличили лимит букв
+                draw.text((x + 10, y + 32), name_b[:21], fill='#f8fafc', font=font)
 
                 if score_text:
                     draw.text((x + box_width - 45, y + 20), score_text, fill='#f43f5e', font=font)
