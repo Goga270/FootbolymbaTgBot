@@ -2299,7 +2299,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             5: "1/32 ФИНАЛА"
         }
 
-        # Генерируем подробную текстовую версию
+        # Генерируем текстовую версию
         msg = f"🏆 <b>Турнирная сетка кубка: {escape(t.name)} ({t.match_format})</b> 🏆\n\n"
         for r_idx, r in enumerate(rounds):
             dist = total_rounds - 1 - r_idx
@@ -2322,44 +2322,48 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             import io
             from PIL import Image, ImageDraw, ImageFont
 
-            # Увеличиваем ширину блоков, чтобы Полные Имена (ФИО) красиво помещались [2]
+            # Увеличили размеры колонок и ячеек для ФИО и лучшей читаемости [2]
             col_width = 300
-            col_gap = 60
+            col_gap = 70
             box_width = 250
-            box_height = 60
+            box_height = 70
 
             img_width = col_gap + (total_rounds * (col_width + col_gap)) + 200
-            img_height = (N // 2) * 100 + 150
-            if img_height < 500:
-                img_height = 500
+            # Увеличили вертикальный шаг (со 110 до 150), чтобы влезли подписи слотов
+            img_height = (N // 2) * 140 + 200
+            if img_height < 600:
+                img_height = 600
 
-            img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Темная тема
+            img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Тёмная тема
             draw = ImageDraw.Draw(img)
 
-            # Пытаемся загрузить официальный шрифт DejaVu из установленного в докере пакета [2]
+            # Загрузка шрифтов из контейнера Docker
             try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 11)
-                font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 20)
+                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 9)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)  # Крупнее! [2]
+                font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
             except IOError:
                 try:
-                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 11)
-                    font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 9)
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
+                    font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
                 except IOError:
+                    font_small = ImageFont.load_default()
                     font = ImageFont.load_default()
                     font_title = ImageFont.load_default()
 
             # Заголовок
-            draw.text((40, 20), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
+            draw.text((40, 25), f"СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
 
             x_coords = {}
             y_coords = {}
 
-            # Координаты Round 0
+            # Координаты Round 0 (вертикальный шаг 140px дает зазоры под подписи слотов)
             col_x = 50
             for i in range(N // 2):
                 slot_id = i + 1
                 x_coords[slot_id] = col_x
-                y_coords[slot_id] = 80 + i * 110
+                y_coords[slot_id] = 100 + i * 140
 
             # Координаты Round 1...
             for r_idx in range(1, len(rounds)):
@@ -2375,10 +2379,15 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     x_coords[slot_id] = col_x
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
+            # Координата матча за 3-е место (отдельный бокс внизу справа)
             x_coords[N] = img_width - col_width - 50
-            y_coords[N] = img_height - 120
+            y_coords[N] = img_height - 140
 
-            # Рисуем соединительные линии
+            # Вспомогательная функция мягкой обрезки имен для предотвращения наложений [2]
+            def limit_name(name: str, max_chars: int = 20) -> str:
+                return name[:max_chars - 3] + "..." if len(name) > max_chars else name
+
+            # Рисуем соединительные линии (ортогональные спортивные ветви)
             for r_idx in range(len(rounds) - 1):
                 r = rounds[r_idx]
                 for i in range(r["count"]):
@@ -2390,14 +2399,15 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         y_curr = y_coords[slot_id] + box_height / 2
 
                         x_next = x_coords[next_slot_id]
-                        y_next = y_coords[next_slot_id] + (15 if next_side == 'a' else 45)
+                        y_next = y_coords[next_slot_id] + (
+                            18 if next_side == 'a' else 52)  # сопоставлено с высотой 70px
 
                         x_mid = (x_curr + x_next) / 2
                         draw.line([(x_curr, y_curr), (x_mid, y_curr)], fill='#475569', width=2)
                         draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#475569', width=2)
                         draw.line([(x_mid, y_next), (x_next, y_next)], fill='#475569', width=2)
 
-            # Рисуем ячейки
+            # Рисуем ячейки с игроками, подписями слотов и счетами [2]
             for p in pairings:
                 slot_id = p.slot_id
                 x = x_coords[slot_id]
@@ -2414,24 +2424,30 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 border_color = '#38bdf8' if p.is_completed else '#475569'
                 box_color = '#1e293b' if p.is_completed else '#0f172a'
 
+                # 1. Рисуем красивую надпись «Слот Х» над левым углом ячейки [2]
+                draw.text((x + 2, y - 16), f"Слот {slot_id}", fill='#64748b', font=font_small)
+
+                # 2. Рисуем скругленный прямоугольник ячейки [2]
                 draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
                                        outline=border_color, width=2)
-                draw.text((x + 10, y + 8), name_a[:21], fill='#f8fafc', font=font)  # Немного увеличили лимит букв
-                draw.text((x + 10, y + 32), name_b[:21], fill='#f8fafc', font=font)
+
+                # 3. Выводим ФИО с безопасной обрезкой (лимит 21 символ), чтобы текст не вылезал за границы [2]
+                draw.text((x + 12, y + 12), limit_name(name_a, 21), fill='#f8fafc', font=font)
+                draw.text((x + 12, y + 40), limit_name(name_b, 21), fill='#f8fafc', font=font)
 
                 if score_text:
-                    draw.text((x + box_width - 45, y + 20), score_text, fill='#f43f5e', font=font)
+                    # Рисуем счет в правой части ячейки контрастным цветом [2]
+                    draw.text((x + box_width - 45, y + 25), score_text, fill='#f43f5e', font=font)
 
-            # Сохраняем картинку в бинарный буфер
+            # Сохраняем результат в память
             bio = io.BytesIO()
             bio.name = 'bracket.png'
             img.save(bio, 'PNG')
             bio.seek(0)
 
-            short_caption = f"📊 <b>Сетка турнира «{escape(t.name)}»</b>"
+            # Отправка
+            short_caption = f"<b>Сетка турнира «{escape(t.name)}»</b>"
             await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
-
-            await update.message.reply_text(msg, parse_mode='HTML')
             return
 
         except Exception as img_err:
