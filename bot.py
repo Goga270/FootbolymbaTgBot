@@ -3213,6 +3213,8 @@ async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    copy_paste_stats = ""
+
     try:
         match_id = int(context.args[0])
     except ValueError:
@@ -3240,10 +3242,7 @@ async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             grouped_actions = {}
             for act in existing_actions:
                 grouped_actions.setdefault(act.player_id, []).append(act.action_type)
-
-            copy_paste_stats = ""
             if existing_actions:
-                # Формируем единый блок, который на телефоне скопируется за 1 клик/тап [2]
                 block_text = ""
                 for player_id, act_list in grouped_actions.items():
                     player = session.get(Player, player_id)
