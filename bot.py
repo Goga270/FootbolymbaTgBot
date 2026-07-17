@@ -2348,12 +2348,13 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Загрузка шрифтов из контейнера Docker
             try:
-                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 9)
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
+                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",15)
                 font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
             except IOError:
                 try:
-                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 9)
+                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 10)
                     font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
                     font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
                     font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
