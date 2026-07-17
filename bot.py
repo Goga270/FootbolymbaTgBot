@@ -2238,7 +2238,7 @@ async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='HTML')
 
 async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Для всех) Вывод сетки матчей турнира в виде красивой PNG-картинки и текста."""
+    """(Для всех) Вывод сетки матчей турнира в виде красивой ДВУСТОРОННЕЙ PNG-картинки и текста."""
     if not await check_group_admin_permissions(update, context):
         return
 
@@ -2299,7 +2299,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             5: "1/32 ФИНАЛА"
         }
 
-        # Генерируем текстовую версию
+        # Генерируем подробную текстовую версию
         msg = f"🏆 <b>Турнирная сетка кубка: {escape(t.name)} ({t.match_format})</b> 🏆\n\n"
         for r_idx, r in enumerate(rounds):
             dist = total_rounds - 1 - r_idx
@@ -2317,30 +2317,38 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
             msg += f"  • {fmt_slot(third_p)}\n"
 
-        # --- ГЕНЕРАЦИЯ КРАСИВОЙ КАРТИНКИ (PILLOW) ---
+        # --- ГЕНЕРАЦИЯ ДВУСТОРОННЕЙ КАРТИНКИ (PILLOW) ---
         try:
             import io
+            import math
             from PIL import Image, ImageDraw, ImageFont
 
-            # Увеличили размеры колонок и ячеек для ФИО и лучшей читаемости [2]
-            col_width = 300
-            col_gap = 70
-            box_width = 250
+            # Настройки размеров и масштаба
+            margin_left = 60
+            col_width = 250
+            col_gap = 80
+            box_width = 240
             box_height = 70
 
-            img_width = col_gap + (total_rounds * (col_width + col_gap)) + 200
-            # Увеличили вертикальный шаг (со 110 до 150), чтобы влезли подписи слотов
-            img_height = (N // 2) * 140 + 200
+            # Общая ширина зависит от количества раундов крыла [2]
+            wing_rounds_count = total_rounds - 1
+            img_width = margin_left * 2 + (wing_rounds_count * 2 * (col_width + col_gap)) + box_width + 100
+            if img_width < 1100:
+                img_width = 1100
+
+            # Высота зависит от количества матчей в левом крыле первого раунда [2]
+            left_wing_matches_count = N // 4
+            img_height = left_wing_matches_count * 150 + 220
             if img_height < 600:
                 img_height = 600
 
-            img = Image.new('RGB', (img_width, img_height), color='#0f172a')  # Тёмная тема
+            img = Image.new('RGB', (img_width, img_height), color='#0b0f19')  # Глубокий космический цвет
             draw = ImageDraw.Draw(img)
 
             # Загрузка шрифтов из контейнера Docker
             try:
                 font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 9)
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)  # Крупнее! [2]
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
                 font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
             except IOError:
                 try:
@@ -2352,42 +2360,73 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     font = ImageFont.load_default()
                     font_title = ImageFont.load_default()
 
-            # Заголовок
-            draw.text((40, 25), f"СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
+            # Заголовок по центру
+            draw.text((40, 25), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
 
             x_coords = {}
             y_coords = {}
+            center_x = img_width / 2
 
-            # Координаты Round 0 (вертикальный шаг 140px дает зазоры под подписи слотов)
-            col_x = 50
-            for i in range(N // 2):
+            # --- РАСЧЕТ КООРДИНАТ ДЛЯ ДВУСТОРОННЕЙ СЕТКИ --- [2]
+            # Шаг 1. Координаты Round 0 (1/8 финала: 4 пары слева, 4 пары справа)
+            spacing = 140
+            col_x_left = margin_left
+            col_x_right = img_width - margin_left - box_width
+
+            # Левое крыло Round 0 [2]
+            for i in range(N // 4):
                 slot_id = i + 1
-                x_coords[slot_id] = col_x
-                y_coords[slot_id] = 100 + i * 140
+                x_coords[slot_id] = col_x_left
+                y_coords[slot_id] = 110 + i * spacing
 
-            # Координаты Round 1...
-            for r_idx in range(1, len(rounds)):
-                col_x += col_width + col_gap
+            # Правое крыло Round 0 [2]
+            for i in range(N // 4):
+                slot_id = (N // 4) + i + 1
+                x_coords[slot_id] = col_x_right
+                y_coords[slot_id] = 110 + i * spacing
+
+            # Шаг 2. Координаты последующих раундов крыльев (от 1 до Предфинала) [2]
+            for r_idx in range(1, total_rounds - 1):
                 r = rounds[r_idx]
                 prev_r = rounds[r_idx - 1]
+                half_count = r["count"] // 2
 
-                for i in range(r["count"]):
+                # Левое крыло раунда r
+                for i in range(half_count):
                     slot_id = r["offset"] + i + 1
                     p1_slot = prev_r["offset"] + 2 * i + 1
                     p2_slot = prev_r["offset"] + 2 * i + 2
 
-                    x_coords[slot_id] = col_x
+                    x_coords[slot_id] = margin_left + r * (box_width + col_gap)
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
-            # Координата матча за 3-е место (отдельный бокс внизу справа)
-            x_coords[N] = img_width - col_width - 50
-            y_coords[N] = img_height - 140
+                # Правое крыло раунда r
+                for i in range(half_count, r["count"]):
+                    slot_id = r["offset"] + i + 1
+                    p1_slot = prev_r["offset"] + 2 * i + 1
+                    p2_slot = prev_r["offset"] + 2 * i + 2
 
-            # Вспомогательная функция мягкой обрезки имен для предотвращения наложений [2]
-            def limit_name(name: str, max_chars: int = 20) -> str:
+                    relative_i = i - half_count
+                    x_coords[slot_id] = img_width - margin_left - box_width - r * (box_width + col_gap)
+                    y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
+
+            # Шаг 3. Координата ФИНАЛА (строго по центру между полуфиналами) [2]
+            final_slot_id = N - 1
+            x_coords[final_slot_id] = center_x - box_width / 2
+
+            semifinal_left_y = y_coords.get(N - 3, img_height / 2)  # Полуфинал слева (Слот N-3)
+            semifinal_right_y = y_coords.get(N - 2, img_height / 2)  # Полуфинал справа (Слот N-2)
+            y_coords[final_slot_id] = (semifinal_left_y + semifinal_right_y) / 2
+
+            # Координата матча за 3-е место (отдельный бокс снизу под Финалом)
+            x_coords[N] = center_x - box_width / 2
+            y_coords[N] = img_height - 110
+
+            # Вспомогательная функция обрезки имен для аккуратности
+            def limit_name(name: str, max_chars: int = 21) -> str:
                 return name[:max_chars - 3] + "..." if len(name) > max_chars else name
 
-            # Рисуем соединительные линии (ортогональные спортивные ветви)
+            # --- РИСУЕМ СОЕДИНИТЕЛЬНЫЕ ЛИНИИ (Двустороннее схождение) --- [2]
             for r_idx in range(len(rounds) - 1):
                 r = rounds[r_idx]
                 for i in range(r["count"]):
@@ -2395,19 +2434,32 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     flow = get_next_slot(slot_id, N)
                     if flow:
                         next_slot_id, next_side = flow
-                        x_curr = x_coords[slot_id] + box_width
-                        y_curr = y_coords[slot_id] + box_height / 2
+                        is_left = i < (r["count"] // 2)
 
-                        x_next = x_coords[next_slot_id]
-                        y_next = y_coords[next_slot_id] + (
-                            18 if next_side == 'a' else 52)  # сопоставлено с высотой 70px
+                        if is_left:
+                            # Линия идет слева направо (из правого края родителя в левый край потомка) [2]
+                            x_curr = x_coords[slot_id] + box_width
+                            y_curr = y_coords[slot_id] + box_height / 2
+                            x_next = x_coords[next_slot_id]
+                            y_next = y_coords[next_slot_id] + (18 if next_side == 'a' else 52)
 
-                        x_mid = (x_curr + x_next) / 2
-                        draw.line([(x_curr, y_curr), (x_mid, y_curr)], fill='#475569', width=2)
-                        draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#475569', width=2)
-                        draw.line([(x_mid, y_next), (x_next, y_next)], fill='#475569', width=2)
+                            x_mid = (x_curr + x_next) / 2
+                            draw.line([(x_curr, y_curr), (x_mid, y_curr)], fill='#334155', width=2)
+                            draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#334155', width=2)
+                            draw.line([(x_mid, y_next), (x_next, y_next)], fill='#334155', width=2)
+                        else:
+                            # Линия идет справа налево (из левого края родителя в правый край потомка) [2]
+                            x_curr = x_coords[slot_id]
+                            y_curr = y_coords[slot_id] + box_height / 2
+                            x_next = x_coords[next_slot_id] + box_width
+                            y_next = y_coords[next_slot_id] + (18 if next_side == 'a' else 52)
 
-            # Рисуем ячейки с игроками, подписями слотов и счетами [2]
+                            x_mid = (x_curr + x_next) / 2
+                            draw.line([(x_curr, y_curr), (x_mid, y_curr)], fill='#334155', width=2)
+                            draw.line([(x_mid, y_curr), (x_mid, y_next)], fill='#334155', width=2)
+                            draw.line([(x_mid, y_next), (x_next, y_next)], fill='#334155', width=2)
+
+            # --- РИСУЕМ ЯЧЕЙКИ С ИГРОКАМИ И СЧЕТАМИ --- [2]
             for p in pairings:
                 slot_id = p.slot_id
                 x = x_coords[slot_id]
@@ -2422,31 +2474,31 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     score_text = ", ".join(m_scores) if m_scores else ""
 
                 border_color = '#38bdf8' if p.is_completed else '#475569'
-                box_color = '#1e293b' if p.is_completed else '#0f172a'
+                box_color = '#111827' if p.is_completed else '#0b0f19'
 
-                # 1. Рисуем красивую надпись «Слот Х» над левым углом ячейки [2]
-                draw.text((x + 2, y - 16), f"Слот {slot_id}", fill='#64748b', font=font_small)
+                # Подпись «Слот Х» над ячейкой [2]
+                draw.text((x + 2, y - 16), f"Слот {slot_id}", fill='#475569', font=font_small)
 
-                # 2. Рисуем скругленный прямоугольник ячейки [2]
+                # Рамка ячейки [2]
                 draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
                                        outline=border_color, width=2)
 
-                # 3. Выводим ФИО с безопасной обрезкой (лимит 21 символ), чтобы текст не вылезал за границы [2]
+                # Имена [2]
                 draw.text((x + 12, y + 12), limit_name(name_a, 21), fill='#f8fafc', font=font)
                 draw.text((x + 12, y + 40), limit_name(name_b, 21), fill='#f8fafc', font=font)
 
                 if score_text:
-                    # Рисуем счет в правой части ячейки контрастным цветом [2]
+                    # Счет в правой части ячейки [2]
                     draw.text((x + box_width - 45, y + 25), score_text, fill='#f43f5e', font=font)
 
-            # Сохраняем результат в память
+            # Сохраняем картинку в память
             bio = io.BytesIO()
             bio.name = 'bracket.png'
             img.save(bio, 'PNG')
             bio.seek(0)
 
             # Отправка
-            short_caption = f"<b>Сетка турнира «{escape(t.name)}»</b>"
+            short_caption = f"📊 <b>Сетка турнира «{escape(t.name)}»</b>"
             await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
             return
 
@@ -3152,14 +3204,50 @@ async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
+            #Считываем и форматируем текущую статистику ПЕРЕД её удалением [2]
+            existing_actions = session.query(Action).filter_by(match_id=match_id).all()
+
+            grouped_actions = {}
+            for act in existing_actions:
+                grouped_actions.setdefault(act.player_id, []).append(act.action_type)
+
+            copy_paste_stats = ""
+            if existing_actions:
+                # Формируем единый блок, который на телефоне скопируется за 1 клик/тап [2]
+                block_text = ""
+                for player_id, act_list in grouped_actions.items():
+                    player = session.get(Player, player_id)
+                    if player:
+                        goals = act_list.count('goal')
+                        assists = act_list.count('assist')
+
+                        parts = []
+                        if goals > 0:
+                            parts.append(f"{goals} гол")
+                        if assists > 0:
+                            parts.append(f"{assists} ассист")
+
+                        block_text += f"{player.nickname}: {', '.join(parts)}\n"
+
+                copy_paste_stats = (
+                    f"✍️ <b>Текущие занесенные действия по матчу №{match_id}:</b>\n"
+                    f"<i>(Нажмите на серый блок ниже, чтобы полностью скопировать его, отредактируйте нужные цифры и отправьте обратно боту)</i>:\n\n"
+                    f"<code>{escape(block_text.strip())}</code>\n\n"
+                )
+            else:
+                copy_paste_stats = f"📊 <i>Статистика голов и пасов для матча №{match_id} сейчас пуста.</i>\n\n"
+
+        session.query(Action).filter_by(match_id=match_id).delete()
+        session.commit()
+
         # Переводим админа в режим ввода статистики
         context.user_data['finishing_match'] = match_id
         context.user_data['silent_stats'] = True
         roster_text = generate_admin_rosters_helper(session, match)
 
         await update.message.reply_text(
-            f"✅ <b>Успешно перешли в режим занесения статистики для ранее сыгранного матча №{match_id}!</b>\n\n"
-            f"Ввод статистики по этой игре пройдет <b>тихо</b> (без публикации и спама в группе) [2].\n\n"
+            f"✅ <b>Успешно перешли в режим редактирования статистики для матча №{match_id}!</b>\n\n"
+            f"{copy_paste_stats}"
             f"{roster_text}",
             parse_mode='HTML'
         )
