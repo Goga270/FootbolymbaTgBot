@@ -3189,6 +3189,7 @@ async def log_match_team_b_players(update: Update, context: ContextTypes.DEFAULT
 
         # Переводим админа в режим ввода голов/пасов для этого матча
         context.user_data['finishing_match'] = match.id
+        context.user_data['silent_stats'] = True
         roster_text = generate_admin_rosters_helper(session, match)
 
         await update.message.reply_text(
@@ -3236,35 +3237,35 @@ async def add_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             return
 
-            #Считываем и форматируем текущую статистику ПЕРЕД её удалением [2]
-            existing_actions = session.query(Action).filter_by(match_id=match_id).all()
+        #Считываем и форматируем текущую статистику ПЕРЕД её удалением [2]
+        existing_actions = session.query(Action).filter_by(match_id=match_id).all()
 
-            grouped_actions = {}
-            for act in existing_actions:
-                grouped_actions.setdefault(act.player_id, []).append(act.action_type)
-            if existing_actions:
-                block_text = ""
-                for player_id, act_list in grouped_actions.items():
-                    player = session.get(Player, player_id)
-                    if player:
-                        goals = act_list.count('goal')
-                        assists = act_list.count('assist')
+        grouped_actions = {}
+        for act in existing_actions:
+            grouped_actions.setdefault(act.player_id, []).append(act.action_type)
+        if existing_actions:
+            block_text = ""
+            for player_id, act_list in grouped_actions.items():
+                player = session.get(Player, player_id)
+                if player:
+                    goals = act_list.count('goal')
+                    assists = act_list.count('assist')
 
-                        parts = []
-                        if goals > 0:
-                            parts.append(f"{goals} гол")
-                        if assists > 0:
-                            parts.append(f"{assists} ассист")
+                    parts = []
+                    if goals > 0:
+                        parts.append(f"{goals} гол")
+                    if assists > 0:
+                        parts.append(f"{assists} ассист")
 
-                        block_text += f"{player.nickname}: {', '.join(parts)}\n"
+                    block_text += f"{player.nickname}: {', '.join(parts)}\n"
 
-                copy_paste_stats = (
-                    f"✍️ <b>Текущие занесенные действия по матчу №{match_id}:</b>\n"
-                    f"<i>(Нажмите на серый блок ниже, чтобы полностью скопировать его, отредактируйте нужные цифры и отправьте обратно боту)</i>:\n\n"
-                    f"<code>{escape(block_text.strip())}</code>\n\n"
-                )
-            else:
-                copy_paste_stats = f"📊 <i>Статистика голов и пасов для матча №{match_id} сейчас пуста.</i>\n\n"
+            copy_paste_stats = (
+                f"✍️ <b>Текущие занесенные действия по матчу №{match_id}:</b>\n"
+                f"<i>(Нажмите на серый блок ниже, чтобы полностью скопировать его, отредактируйте нужные цифры и отправьте обратно боту)</i>:\n\n"
+                f"<code>{escape(block_text.strip())}</code>\n\n"
+            )
+        else:
+            copy_paste_stats = f"📊 <i>Статистика голов и пасов для матча №{match_id} сейчас пуста.</i>\n\n"
 
         session.query(Action).filter_by(match_id=match_id).delete()
         session.commit()
