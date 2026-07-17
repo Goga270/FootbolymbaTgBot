@@ -2397,7 +2397,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     p1_slot = prev_r["offset"] + 2 * i + 1
                     p2_slot = prev_r["offset"] + 2 * i + 2
 
-                    x_coords[slot_id] = margin_left + r * (box_width + col_gap)
+                    x_coords[slot_id] = margin_left + r_idx * (box_width + col_gap)
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
                 # Правое крыло раунда r
@@ -2407,7 +2407,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     p2_slot = prev_r["offset"] + 2 * i + 2
 
                     relative_i = i - half_count
-                    x_coords[slot_id] = img_width - margin_left - box_width - r * (box_width + col_gap)
+                    x_coords[slot_id] = img_width - margin_left - box_width - r_idx * (box_width + col_gap)
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
             # Шаг 3. Координата ФИНАЛА (строго по центру между полуфиналами) [2]
