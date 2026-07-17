@@ -2957,10 +2957,10 @@ async def log_match_select_type(update: Update, context: ContextTypes.DEFAULT_TY
             for t in active_tournaments:
                 pairings = session.query(TournamentPairing).filter_by(tournament_id=t.id, is_completed=False).all()
                 for pairing in pairings:
-                    cap_a = session.get(Player, pairing.captain_a_id) if pairing.captain_a_id else None
-                    cap_b = session.get(Player, pairing.captain_b_id) if pairing.captain_b_id else None
-                    name_a = cap_a.nickname if cap_a else "TBD"
-                    name_b = cap_b.nickname if cap_b else "TBD"
+                    cap_a = get_player_by_tgid(session, pairing.captain_a_id) if pairing.captain_a_id else None
+                    cap_b = get_player_by_tgid(session, pairing.captain_b_id) if pairing.captain_b_id else None
+                    name_a = escape(cap_a.nickname) if cap_a else "TBD"
+                    name_b = escape(cap_b.nickname) if cap_b else "TBD"
 
                     available_pairings.append((pairing.id, t.name, pairing.stage, name_a, name_b))
 
@@ -2995,7 +2995,7 @@ async def log_match_found_cap_a(update: Update, context: ContextTypes.DEFAULT_TY
     cap_a_nick = context.user_data.pop('log_cap_a_nick')
     with SessionLocal() as session:
         cap_a = get_player_by_nickname(session, cap_a_nick)
-        context.user_data['log_data']['cap_a_id'] = cap_a.id
+        context.user_data['log_data']['cap_a_id'] = cap_a.tg_id
 
     context.user_data['next_function'] = log_match_found_cap_b
     await start_player_search(
@@ -3009,7 +3009,7 @@ async def log_match_found_cap_b(update: Update, context: ContextTypes.DEFAULT_TY
     cap_b_nick = context.user_data.pop('log_cap_b_nick')
     with SessionLocal() as session:
         cap_b = get_player_by_nickname(session, cap_b_nick)
-        context.user_data['log_data']['cap_b_id'] = cap_b.id
+        context.user_data['log_data']['cap_b_id'] = cap_b.tg_id
         cap_a = session.get(Player, context.user_data['log_data']['cap_a_id'])
 
     buttons = [
@@ -3082,7 +3082,7 @@ async def log_match_enter_score(update: Update, context: ContextTypes.DEFAULT_TY
     log_data['score_b'] = score_b
 
     with SessionLocal() as session:
-        cap_a = session.get(Player, log_data['cap_a_id'])
+        cap_a = get_player_by_tgid(session, log_data['cap_a_id'])
         await update.message.reply_text(
             f"Счет зафиксирован: <b>{score_a} - {score_b}</b>.\n\n"
             f"Теперь пришлите никнеймы игроков <b>КОМАНДЫ А</b> (капитана {escape(cap_a.full_name or '')} вписывать не нужно) через пробел:",
@@ -3112,7 +3112,7 @@ async def log_match_team_a_players(update: Update, context: ContextTypes.DEFAULT
     log_data['team_a_player_ids'] = player_ids
 
     with SessionLocal() as session:
-        cap_b = session.get(Player, log_data['cap_b_id'])
+        cap_b = get_player_by_tgid(session, log_data['cap_b_id'])
         await update.message.reply_text(
             f"Команда А записана.\n\n"
             f"Теперь пришлите никнеймы игроков <b>КОМАНДЫ Б</b> (капитана {escape(cap_b.full_name or '')} вписывать не нужно) через пробел:",
@@ -3142,8 +3142,8 @@ async def log_match_team_b_players(update: Update, context: ContextTypes.DEFAULT
     log_data['team_b_player_ids'] = player_ids
 
     with SessionLocal() as session:
-        cap_a = session.get(Player, log_data['cap_a_id'])
-        cap_b = session.get(Player, log_data['cap_b_id'])
+        cap_a = get_player_by_tgid(session, log_data['cap_a_id'])
+        cap_b = get_player_by_tgid(session, log_data['cap_b_id'])
 
         all_players = [cap_a, cap_b]
         for pid in log_data['team_a_player_ids'] + log_data['team_b_player_ids']:
