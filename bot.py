@@ -2237,7 +2237,6 @@ async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "\nДля просмотра сетки: <code>/view_bracket &lt;ID_турнира&gt;</code>"
         await update.message.reply_text(msg, parse_mode='HTML')
 
-
 def get_seeds_for_slot(slot_id: int, N: int) -> tuple[str, str]:
     """Возвращает стандартные номера посева для первого раунда в зависимости от размера сетки."""
     SEEDS_16 = {
@@ -2268,9 +2267,8 @@ def get_seeds_for_slot(slot_id: int, N: int) -> tuple[str, str]:
         return SEEDS_4.get(slot_id, ("", ""))
     return ("", "")
 
-
 async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """(Для всех) Вывод сетки матчей турнира в виде красивой PNG-картинки (один в один с вашим фото) и текста."""
+    """(Для всех) Вывод сетки матчей турнира в виде красивой ДВУСТОРОННЕЙ серо-золотой PNG-картинки и текста."""
     if not await check_group_admin_permissions(update, context):
         return
 
@@ -2299,8 +2297,8 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
         N = len(pairings)  # Слот N - матч за 3-е место, N-1 - финал
 
         def fmt_slot(p):
-            name_a = get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a')
-            name_b = get_captain_name_or_placeholder(session, p.slot_id, t.id, 'b')
+            name_a = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a'))
+            name_b = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'b'))
 
             if p.is_completed:
                 score = p.manual_score_text if p.manual_score_text else ", ".join(
@@ -2349,122 +2347,175 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             msg += f"🥉 <b>МАТЧ ЗА 3-Е МЕСТО:</b>\n"
             msg += f"  • {fmt_slot(third_p)}\n"
 
-        # --- ГЕНЕРАЦИЯ ДВУСТОРОННЕЙ КАРТИНКИ (PILLOW) --- [2]
+        # --- ГЕНЕРАЦИЯ СЕРО-ЗОЛОТОЙ ДВУСТОРОННЕЙ КАРТИНКИ (PILLOW) --- [2]
         try:
             import io
             import math
             from PIL import Image, ImageDraw, ImageFont
 
-            # Настройки размеров и геометрии
-            col_width = 340
-            col_gap = 100
+            # Настройки геометрии
+            margin_left = 60
+            col_width = 250
+            col_gap = 80
             box_width = 240
-            box_height = 80  # Увеличено до 80px для двухстрочного вывода
+            box_height = 70
 
-            img_width = 50 + (total_rounds * (col_width + col_gap)) + 150
-            img_height = (N // 2) * 140 + 200
+            wing_rounds_count = total_rounds - 1
+            img_width = margin_left * 2 + (wing_rounds_count * 2 * (col_width + col_gap)) + box_width + 100
+            if img_width < 1100:
+                img_width = 1100
+
+            left_wing_matches_count = N // 4
+            img_height = left_wing_matches_count * 150 + 220
             if img_height < 600:
                 img_height = 600
 
-            img = Image.new('RGB', (img_width, img_height), color='#1e1e1e')  # Темно-серый фон
+            img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')  # Благородный серо-угольный фон
             draw = ImageDraw.Draw(img)
 
             # Загрузка шрифтов из контейнера Docker
             try:
                 font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 9)
                 font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+                                                16)
                 font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
             except IOError:
                 try:
                     font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 9)
                     font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
+                    font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 16)
                     font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
                 except IOError:
                     font_small = ImageFont.load_default()
                     font = ImageFont.load_default()
+                    font_score = ImageFont.load_default()
                     font_title = ImageFont.load_default()
 
-            # 1. Наносим фоновую точечную сетку (Dot Mesh) для стильного эффекта [2]
+            # Фоновая точечная сетка
             for dx in range(0, img_width, 20):
                 for dy in range(0, img_height, 20):
-                    draw.point((dx, dy), fill='#2d2d2d')
+                    draw.point((dx, dy), fill='#1c1c1f')
 
-            # Заголовок
-            draw.text((40, 25), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#eab308', font=font_title)
+            # Заголовок (Золотой цвет)
+            draw.text((40, 25), f"🏆 СЕТКА: {t.name.upper()} ({t.match_format})", fill='#fbbf24', font=font_title)
 
             x_coords = {}
             y_coords = {}
+            center_x = img_width / 2
 
             # Координаты Round 0
-            col_x = 50
-            for i in range(N // 2):
-                slot_id = i + 1
-                x_coords[slot_id] = col_x
-                y_coords[slot_id] = 100 + i * 140
+            spacing = 140
+            col_x_left = margin_left
+            col_x_right = img_width - margin_left - box_width
 
-            # Координаты Round 1...
-            for r_idx in range(1, len(rounds)):
-                col_x += col_width + col_gap
+            # Левое крыло Round 0
+            for i in range(N // 4):
+                slot_id = i + 1
+                x_coords[slot_id] = col_x_left
+                y_coords[slot_id] = 110 + i * spacing
+
+            # Правое крыло Round 0
+            for i in range(N // 4):
+                slot_id = (N // 4) + i + 1
+                x_coords[slot_id] = col_x_right
+                y_coords[slot_id] = 110 + i * spacing
+
+            # Координаты последующих раундов крыльев
+            for r_idx in range(1, total_rounds - 1):
                 r = rounds[r_idx]
                 prev_r = rounds[r_idx - 1]
+                half_count = r["count"] // 2
 
-                for i in range(r["count"]):
+                for i in range(half_count):
                     slot_id = r["offset"] + i + 1
                     p1_slot = prev_r["offset"] + 2 * i + 1
                     p2_slot = prev_r["offset"] + 2 * i + 2
 
-                    x_coords[slot_id] = col_x
+                    x_coords[slot_id] = margin_left + r_idx * (box_width + col_gap)
                     y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
 
-            # Координата матча за 3-е место
-            x_coords[N] = img_width - col_width - 50
-            y_coords[N] = img_height - 140
+                for i in range(half_count, r["count"]):
+                    slot_id = r["offset"] + i + 1
+                    p1_slot = prev_r["offset"] + 2 * i + 1
+                    p2_slot = prev_r["offset"] + 2 * i + 2
 
-            # Вспомогательная функция обрезки имен для аккуратности
-            def limit_name(name: str, max_chars: int = 16) -> str:
+                    relative_i = i - half_count
+                    x_coords[slot_id] = img_width - margin_left - box_width - r_idx * (box_width + col_gap)
+                    y_coords[slot_id] = (y_coords[p1_slot] + y_coords[p2_slot]) / 2
+
+            # Координата ФИНАЛА
+            final_slot_id = N - 1
+            x_coords[final_slot_id] = center_x - box_width / 2
+
+            semifinal_left_y = y_coords.get(N - 3, img_height / 2)
+            semifinal_right_y = y_coords.get(N - 2, img_height / 2)
+            y_coords[final_slot_id] = (semifinal_left_y + semifinal_right_y) / 2
+
+            x_coords[N] = center_x - box_width / 2
+            y_coords[N] = img_height - 110
+
+            def limit_name(name: str, max_chars: int = 21) -> str:
                 return name[:max_chars - 3] + "..." if len(name) > max_chars else name
 
-            # 2. РИСУЕМ СВЯЗУЮЩИЕ СКОБКИ (Bracket Hooks) ОДИН В ОДИН С ФОТО [2]
+            # --- РИСУЕМ СВЯЗУЮЩИЕ СКОБКИ И ЛИНИИ (Symmetrical Brackets) --- [2]
             for r_idx in range(len(rounds) - 1):
                 r = rounds[r_idx]
                 next_round = rounds[r_idx + 1]
 
-                for i in range(r["count"] // 2):
-                    slot_p1 = r["offset"] + 2 * i + 1
-                    slot_p2 = r["offset"] + 2 * i + 2
-                    next_slot_id = next_round["offset"] + i + 1
+                # Если раунд содержит 4 или более пар, рисуем фигурные скобки [2]
+                if r["count"] >= 4:
+                    for i in range(r["count"] // 2):
+                        slot_p1 = r["offset"] + 2 * i + 1
+                        slot_p2 = r["offset"] + 2 * i + 2
+                        next_slot_id = next_round["offset"] + i + 1
+                        is_left = i < (r["count"] // 2)
 
-                    x_curr = x_coords[slot_p1] + box_width
-                    y_curr1 = y_coords[slot_p1] + box_height / 2
-                    y_curr2 = y_coords[slot_p2] + box_height / 2
+                        if is_left:
+                            x_curr = x_coords[slot_p1] + box_width
+                            y_curr1 = y_coords[slot_p1] + box_height / 2
+                            y_curr2 = y_coords[slot_p2] + box_height / 2
+                            x_hook = x_curr + 15
+                            y_mid = (y_curr1 + y_curr2) / 2
 
-                    x_hook = x_curr + 15
-                    y_mid = (y_curr1 + y_curr2) / 2
+                            draw.line([(x_hook, y_curr1), (x_hook, y_curr2)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_curr1), (x_hook - 15, y_curr1)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_curr2), (x_hook - 15, y_curr2)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_mid), (x_hook + 15, y_mid)], fill='#374151', width=2)
+                            draw.text((x_hook + 22, y_mid - 7), str(next_slot_id), fill='#8a8a93', font=font)
+                        else:
+                            x_curr = x_coords[slot_p1]
+                            y_curr1 = y_coords[slot_p1] + box_height / 2
+                            y_curr2 = y_coords[slot_p2] + box_height / 2
+                            x_hook = x_curr - 15
+                            y_mid = (y_curr1 + y_curr2) / 2
 
-                    # Рисуем фигурные ушки скобки "}"
-                    draw.line([(x_hook, y_curr1), (x_hook, y_curr2)], fill='#666666', width=2)
-                    draw.line([(x_hook, y_curr1), (x_hook - 15, y_curr1)], fill='#666666', width=2)
-                    draw.line([(x_hook, y_curr2), (x_hook - 15, y_curr2)], fill='#666666', width=2)
+                            draw.line([(x_hook, y_curr1), (x_hook, y_curr2)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_curr1), (x_hook + 15, y_curr1)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_curr2), (x_hook + 15, y_curr2)], fill='#374151', width=2)
+                            draw.line([(x_hook, y_mid), (x_hook - 15, y_mid)], fill='#374151', width=2)
+                            draw.text((x_hook - 35, y_mid - 7), str(next_slot_id), fill='#8a8a93', font=font)
 
-                    # Рисуем указатель вправо
-                    draw.line([(x_hook, y_mid), (x_hook + 15, y_mid)], fill='#666666', width=2)
+                # Если это полуфинал (всего 2 пары в раунде), рисуем благородные прямые линии к Финалу [2]
+                elif r["count"] == 2:
+                    # Левый полуфинал (Слот N-3)
+                    draw.line([(x_coords[N - 3] + box_width, y_coords[N - 3] + box_height / 2),
+                               (x_coords[N - 1], y_coords[N - 1] + 18)], fill='#374151', width=2)
+                    # Правый полуфинал (Слот N-2)
+                    draw.line([(x_coords[N - 2], y_coords[N - 2] + box_height / 2),
+                               (x_coords[N - 1] + box_width, y_coords[N - 1] + 52)], fill='#374151', width=2)
 
-                    # Пишем номер следующего слота рядом со скобкой
-                    draw.text((x_hook + 22, y_mid - 7), str(next_slot_id), fill='#aaaaaa', font=font)
-
-            # 3. РИСУЕМ ДВУХСТРОЧНЫЕ ЯЧЕЙКИ С ПОСЕВОМ И СЧЕТОМ [2]
+            # --- РИСУЕМ ДВУХСТРОЧНЫЕ ЯЧЕЙКИ С ВЕРТИКАЛЬНЫМ СЧЕТОМ --- [2]
             for p in pairings:
                 slot_id = p.slot_id
                 x = x_coords[slot_id]
                 y = y_coords[slot_id]
 
-                # Маленький индекс слота слева от коробки (как на фото)
-                draw.text((x - 22, y + 33), str(slot_id), fill='#555555', font=font_small)
+                draw.text((x - 22, y + 28), str(slot_id), fill='#4b5563', font=font_small)
 
                 name_a = get_captain_name_or_placeholder(session, slot_id, t.id, 'a')
                 name_b = get_captain_name_or_placeholder(session, slot_id, t.id, 'b')
 
-                # Разбираем и вытаскиваем раздельные счета
                 score_a_text, score_b_text = "", ""
                 if p.manual_score_text:
                     parts = p.manual_score_text.replace(' ', '').split(',')
@@ -2490,43 +2541,38 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 tot_b += m.score_a
                         score_a_text, score_b_text = str(tot_a), str(tot_b)
 
-                border_color = '#eab308' if p.is_completed else '#444444'
-                box_color = '#111111' if p.is_completed else '#222222'
+                # Золотая рамка для завершенных ячеек, темно-серая — для остальных [2]
+                border_color = '#fbbf24' if p.is_completed else '#374151'
+                box_color = '#121214' if p.is_completed else '#0c0c0e'
 
-                # Общая рамка ячейки [2]
                 draw.rectangle([x, y, x + box_width, y + box_height], fill=box_color, outline=border_color, width=2)
-                # Горизонтальный разделитель посередине [2]
-                draw.line([(x, y + 40), (x + box_width, y + 40)], fill='#2d2d2d', width=2)
+                draw.line([(x, y + 35), (x + box_width, y + 35)], fill='#2d2d2d', width=2)
 
-                # Получаем стандартные номера посева
                 seed_a, seed_b = get_seeds_for_slot(slot_id, N)
 
-                # --- СТРОКА А (Верхняя половина) ---
-                # Маленький серый бокс посева слева [2]
-                draw.rectangle([x, y, x + 35, y + 40], fill='#2d2d2d', outline='#353535', width=1)
+                # --- СТРОКА А (Верхний игрок) ---
+                draw.rectangle([x, y, x + 35, y + 35], fill='#242427', outline='#2f2f33', width=1)
                 if seed_a:
-                    draw.text((x + 13, y + 14), str(seed_a), fill='#888888', font=font_small)
-                # Имя
-                draw.text((x + 47, y + 12), limit_name(name_a, 16), fill='#f3f4f6', font=font)
+                    draw.text((x + 13, y + 12), str(seed_a), fill='#8a8a93', font=font_small)
+                draw.text((x + 47, y + 10), limit_name(name_a, 16), fill='#ffffff', font=font)
 
-                # --- СТРОКА Б (Нижняя половина) ---
-                # Маленький серый бокс посева слева [2]
-                draw.rectangle([x, y + 40, x + 35, y + 80], fill='#2d2d2d', outline='#353535', width=1)
+                # --- СТРОКА Б (Нижний игрок) ---
+                draw.rectangle([x, y + 35, x + 35, y + 70], fill='#242427', outline='#2f2f33', width=1)
                 if seed_b:
-                    draw.text((x + 13, y + 54), str(seed_b), fill='#888888', font=font_small)
-                # Имя
-                draw.text((x + 47, y + 52), limit_name(name_b, 16), fill='#f3f4f6', font=font)
+                    draw.text((x + 13, y + 47), str(seed_b), fill='#8a8a93', font=font_small)
+                draw.text((x + 47, y + 45), limit_name(name_b, 16), fill='#ffffff', font=font)
 
-                # --- ЯЧЕЙКИ СЧЕТА (Отрисовываются справа, только если матч сыгран) --- [2]
+                # --- ВЕРТИКАЛЬНЫЕ КОРОБКИ СЧЕТА (Справа) --- [2]
                 if score_a_text or score_b_text:
-                    # Бокс счета А
-                    draw.rectangle([x + box_width - 45, y, x + box_width, y + 40], fill='#2d2d2d', outline='#353535',
+                    # Коробочка счета А (Золотые крупные цифры) [2]
+                    draw.rectangle([x + box_width - 45, y, x + box_width, y + 35], fill='#242427', outline='#2f2f33',
                                    width=1)
-                    draw.text((x + box_width - 28, y + 12), score_a_text, fill='#ffffff', font=font)
-                    # Бокс счета Б
-                    draw.rectangle([x + box_width - 45, y + 40, x + box_width, y + 80], fill='#2d2d2d',
-                                   outline='#353535', width=1)
-                    draw.text((x + box_width - 28, y + 52), score_b_text, fill='#ffffff', font=font)
+                    draw.text((x + box_width - 28, y + 8), score_a_text, fill='#fbbf24', font=font_score)
+
+                    # Коробочка счета Б (Золотые крупные цифры) [2]
+                    draw.rectangle([x + box_width - 45, y + 35, x + box_width, y + 70], fill='#242427',
+                                   outline='#2f2f33', width=1)
+                    draw.text((x + box_width - 28, y + 43), score_b_text, fill='#fbbf24', font=font_score)
 
             # Сохраняем картинку в бинарный буфер
             bio = io.BytesIO()
@@ -2536,6 +2582,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             short_caption = f"📊 <b>Сетка турнира «{escape(t.name)}»</b>"
             await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
+            await update.message.reply_text(msg, parse_mode='HTML')
             return
 
         except Exception as img_err:
