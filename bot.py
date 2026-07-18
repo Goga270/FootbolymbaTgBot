@@ -78,35 +78,36 @@ def get_next_slot(slot_id: int, N: int) -> Optional[tuple[int, str]]:
     return None
 
 def get_pairing_winner(pairing: TournamentPairing, session: Session) -> Optional[int]:
-    """Вычисляет победителя в паре по сумме всех голов (ручных и сыгранных в боте)."""
+    """Вычисляет победителя в паре по совокупной сумме всех голов (ручных + сыгранных в боте) [2]."""
+    tot_a, tot_b = 0, 0
+
+    # 1. Приплюсовываем голы из ручного ввода первой игры (если он есть) [2]
     if pairing.manual_score_text:
         try:
             parts = pairing.manual_score_text.replace(' ', '').split(',')
-            tot_a, tot_b = 0, 0
             for part in parts:
                 sa, sb = map(int, part.split('-'))
                 tot_a += sa
                 tot_b += sb
-            if tot_a > tot_b:
-                return pairing.captain_a_id
-            elif tot_b > tot_a:
-                return pairing.captain_b_id
-        except Exception:
-            pass
-    else:
-        tot_a, tot_b = 0, 0
-        for m in pairing.matches:
-            if m.status == MatchStatus.FINISHED:
-                if m.captain_a_id == pairing.captain_a_id:
-                    tot_a += m.score_a
-                    tot_b += m.score_b
-                else:
-                    tot_a += m.score_b
-                    tot_b += m.score_a
-        if tot_a > tot_b:
-            return pairing.captain_a_id
-        elif tot_b > tot_a:
-            return pairing.captain_b_id
+        except Exception as e:
+            logger.error(f"Ошибка парсинга ручного счета в get_pairing_winner: {e}")
+
+    # 2. Приплюсовываем голы из всех сыгранных в боте реальных матчей [2]
+    for m in pairing.matches:
+        if m.status == MatchStatus.FINISHED:
+            if m.captain_a_id == pairing.captain_a_id:
+                tot_a += m.score_a
+                tot_b += m.score_b
+            else:
+                tot_a += m.score_b
+                tot_b += m.score_a
+
+    # 3. Сравниваем финальные суммы голов всей серии [2]
+    if tot_a > tot_b:
+        return pairing.captain_a_id
+    elif tot_b > tot_a:
+        return pairing.captain_b_id
+
     return None
 
 def trigger_advancement(session: Session, pairing: TournamentPairing):
