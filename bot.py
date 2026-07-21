@@ -2375,16 +2375,16 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             # Загрузка шрифтов из контейнера Docker
             try:
-                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
-                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",18)
-                font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",20)
+                font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 24)
             except IOError:
                 try:
-                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
-                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
-                    font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
-                    font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
+                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+                    font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 20)
+                    font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
                 except IOError:
                     font_small = ImageFont.load_default()
                     font = ImageFont.load_default()
@@ -2514,17 +2514,19 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
                                        outline=border_color, width=2)
 
-                draw.text((x + 12, y + 12), limit_name(name_a, 30), fill='#ffffff', font=font)
-                draw.text((x + 12, y + 40), limit_name(name_b, 30), fill='#ffffff', font=font)
+                draw.text((x + 16, y + 16), limit_name(name_a, 30), fill='#ffffff', font=font)
+                draw.text((x + 16, y + 56), limit_name(name_b, 30), fill='#ffffff', font=font)
 
                 if score_a_text or score_b_text:
-                    draw.rectangle([x + box_width - 45, y, x + box_width, y + 35], fill='#242427', outline='#2f2f33',
+                    padding_left_score_a = 5 if int(score_a_text) > 9 else 10
+                    padding_left_score_b = 5 if int(score_b_text) > 9 else 10
+                    draw.rectangle([x + box_width - 45, y, x + box_width, y + 45], fill='#242427', outline='#2f2f33',
                                    width=1)
-                    draw.text((x + box_width - 28, y + 8), score_a_text, fill='#fbbf24', font=font_score)
+                    draw.text((x + box_width - (45 - padding_left_score_a), y + 10), score_a_text, fill='#fbbf24', font=font_score)
 
-                    draw.rectangle([x + box_width - 45, y + 35, x + box_width, y + 70], fill='#242427',
+                    draw.rectangle([x + box_width - 45, y + 45, x + box_width, y + 90], fill='#242427',
                                    outline='#2f2f33', width=1)
-                    draw.text((x + box_width - 28, y + 43), score_b_text, fill='#fbbf24', font=font_score)
+                    draw.text((x + box_width - (45 - padding_left_score_b), y + 55), score_b_text, fill='#fbbf24', font=font_score)
 
             # Сохраняем картинку в память
             bio = io.BytesIO()
