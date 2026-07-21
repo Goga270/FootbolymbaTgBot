@@ -2302,7 +2302,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_a = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a'))
             name_b = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'b'))
 
-            tot_a, tot_b = get_pairing_aggregate_score(p)
+            tot_a, tot_b = get_pairing_aggregate_score(p, session)
 
             if p.is_completed:
                 return f"Слот {p.slot_id}: <b>{name_a} vs {name_b}</b> (✅ {tot_a}-{tot_b})"
