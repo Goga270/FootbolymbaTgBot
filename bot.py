@@ -2,6 +2,7 @@ import logging
 import random
 from typing import List, Optional
 from html import escape
+import io
 
 from config import TELEGRAM_TOKEN, ADMIN_IDS, RPS_OPTIONS, TARGET_GROUP_ID
 from database import (
@@ -2238,6 +2239,35 @@ async def list_tournaments(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg += "\nДля просмотра сетки: <code>/view_bracket &lt;ID_турнира&gt;</code>"
         await update.message.reply_text(msg, parse_mode='HTML')
 
+
+def get_pairing_aggregate_score(pairing: TournamentPairing, session: Session) -> tuple[int, int]:
+    """
+    Вычисляет суммарный счет матчей в паре (из ручного ввода первой игры + из сыгранных в боте матчей).
+    Возвращает кортеж из двух чисел: (total_score_a, total_score_b) [2].
+    """
+    tot_a, tot_b = 0, 0
+
+    if pairing.manual_score_text:
+        try:
+            parts = pairing.manual_score_text.replace(' ', '').split(',')
+            for part in parts:
+                sa, sb = map(int, part.split('-'))
+                tot_a += sa
+                tot_b += sb
+        except Exception as e:
+            logger.error(f"Ошибка парсинга ручного счета в get_pairing_aggregate_score: {e}")
+
+    for m in pairing.matches:
+        if m.status == MatchStatus.FINISHED:
+            if m.captain_a_id == pairing.captain_a_id:
+                tot_a += m.score_a
+                tot_b += m.score_b
+            else:
+                tot_a += m.score_b
+                tot_b += m.score_a
+
+    return tot_a, tot_b
+
 async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Для всех) Вывод сетки матчей турнира в виде красивой ДВУСТОРОННЕЙ PNG-картинки и текста."""
     if not await check_group_admin_permissions(update, context):
@@ -2272,16 +2302,12 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             name_a = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'a'))
             name_b = escape(get_captain_name_or_placeholder(session, p.slot_id, t.id, 'b'))
 
+            tot_a, tot_b = get_pairing_aggregate_score(p)
+
             if p.is_completed:
-                score = p.manual_score_text if p.manual_score_text else ", ".join(
-                    f"{m.score_a}-{m.score_b}" for m in p.matches if m.status == MatchStatus.FINISHED)
-                return f"Слот {p.slot_id}: <b>{name_a} vs {name_b}</b> (✅ {score})"
+                return f"Слот {p.slot_id}: <b>{name_a} vs {name_b}</b> (✅ {tot_a}-{tot_b})"
             else:
-                score_info = f" (прошлый счет: {p.manual_score_text})" if p.manual_score_text else ""
-                m_scores = [f"{m.score_a}-{m.score_b}" for m in p.matches if m.status == MatchStatus.FINISHED]
-                if m_scores:
-                    score_info = f" ({', '.join(m_scores)})"
-                return f"Слот {p.slot_id}: {name_a} vs {name_b} (⏳ В процессе{score_info})"
+                return f"Слот {p.slot_id}: {name_a} vs {name_b} (⏳ Прошлый матч: {tot_a}-{tot_b})"
 
         rounds = []
         offset = 0
@@ -2330,7 +2356,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             col_width = 300
             col_gap = 75
             box_width = 300
-            box_height = 70
+            box_height = 90
 
             # Общая ширина зависит от количества раундов крыла [2]
             wing_rounds_count = total_rounds - 1
@@ -2344,20 +2370,20 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if img_height < 600:
                 img_height = 600
 
-            img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')  # Серо-угольный фон [2]
+            img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')
             draw = ImageDraw.Draw(img)
 
             # Загрузка шрифтов из контейнера Docker
             try:
-                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 10)
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
-                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",15)
+                font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 12)
+                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 15)
+                font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",18)
                 font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
             except IOError:
                 try:
-                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 10)
-                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
-                    font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
+                    font_small = ImageFont.truetype("DejaVuSans-Bold.ttf", 12)
+                    font = ImageFont.truetype("DejaVuSans-Bold.ttf", 15)
+                    font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
                     font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
                 except IOError:
                     font_small = ImageFont.load_default()
@@ -2366,7 +2392,7 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     font_title = ImageFont.load_default()
 
             # Заголовок по центру
-            draw.text((40, 25), f"СЕТКА: {t.name.upper()} ({t.match_format})", fill='#38bdf8', font=font_title)
+            draw.text((40, 25), f"СЕТКА: {t.name.upper()} ({t.match_format})", fill='#fbbf24', font=font_title)
 
             x_coords = {}
             y_coords = {}
@@ -2473,51 +2499,29 @@ async def view_bracket(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 name_b = get_captain_name_or_placeholder(session, slot_id, t.id, 'b')
 
                 score_a_text, score_b_text = "", ""
-                if p.manual_score_text:
-                    parts = p.manual_score_text.replace(' ', '').split(',')
-                    tot_a, tot_b = 0, 0
-                    for part in parts:
-                        try:
-                            sa, sb = map(int, part.split('-'))
-                            tot_a += sa
-                            tot_b += sb
-                        except ValueError:
-                            pass
+
+                has_score = (p.manual_score_text is not None) or any(m.status == MatchStatus.FINISHED for m in p.matches)
+
+                if has_score:
+                    tot_a, tot_b = get_pairing_aggregate_score(p, session)
                     score_a_text, score_b_text = str(tot_a), str(tot_b)
-                else:
-                    finished_matches = [m for m in p.matches if m.status == MatchStatus.FINISHED]
-                    if finished_matches:
-                        tot_a, tot_b = 0, 0
-                        for m in finished_matches:
-                            if m.captain_a_id == p.captain_a_id:
-                                tot_a += m.score_a
-                                tot_b += m.score_b
-                            else:
-                                tot_a += m.score_b
-                                tot_b += m.score_a
-                        score_a_text, score_b_text = str(tot_a), str(tot_b)
 
                 border_color = '#fbbf24' if p.is_completed else '#374151'
                 box_color = '#121214' if p.is_completed else '#0c0c0e'
 
-                # Подпись «Слот Х» над ячейкой [2]
                 draw.text((x + 2, y - 16), f"Слот {slot_id}", fill='#fbbf24', font=font_small)
 
-                # Рамка ячейки [2]
                 draw.rounded_rectangle([x, y, x + box_width, y + box_height], radius=6, fill=box_color,
                                        outline=border_color, width=2)
 
-                # Имена [2]
                 draw.text((x + 12, y + 12), limit_name(name_a, 30), fill='#ffffff', font=font)
                 draw.text((x + 12, y + 40), limit_name(name_b, 30), fill='#ffffff', font=font)
 
                 if score_a_text or score_b_text:
-                    # Коробочка счета А (Золотые крупные цифры) [2]
                     draw.rectangle([x + box_width - 45, y, x + box_width, y + 35], fill='#242427', outline='#2f2f33',
                                    width=1)
                     draw.text((x + box_width - 28, y + 8), score_a_text, fill='#fbbf24', font=font_score)
 
-                    # Коробочка счета Б (Золотые крупные цифры) [2]
                     draw.rectangle([x + box_width - 45, y + 35, x + box_width, y + 70], fill='#242427',
                                    outline='#2f2f33', width=1)
                     draw.text((x + box_width - 28, y + 43), score_b_text, fill='#fbbf24', font=font_score)
@@ -2670,22 +2674,101 @@ async def tournament_history(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # --- Публичные лидерборды ---
 
-async def post_leaderboard_public(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str, data: list,
-                                  unit: str):
+def draw_leaderboard_pillow(title: str, data: list, unit: str, color_hex: str) -> io.BytesIO:
+    """Генерирует красивую карточку со списком лидеров (темная тема) [2]."""
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+
+    # Расчет высоты в зависимости от количества игроков в топе (5 или 10)
+    img_width = 600
+    row_height = 65
+    header_height = 100
+    img_height = header_height + len(data) * row_height + 40
+    if img_height < 450:
+        img_height = 450
+
+    img = Image.new('RGB', (img_width, img_height), color='#0b0f19')  # Глубокий синий
+    draw = ImageDraw.Draw(img)
+
+    # Фоновая точечная сетка
+    for dx in range(0, img_width, 20):
+        for dy in range(0, img_height, 20):
+            draw.point((dx, dy), fill='#151d30')
+
+    # Загрузка шрифтов
+    try:
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+        font_title = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 22)
+    except IOError:
+        try:
+            font_small = ImageFont.truetype("DejaVuSans.ttf", 11)
+            font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+            font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+            font_title = ImageFont.truetype("DejaVuSans-Bold.ttf", 22)
+        except IOError:
+            font_small = ImageFont.load_default()
+            font_medium = ImageFont.load_default()
+            font_large = ImageFont.load_default()
+            font_title = ImageFont.load_default()
+
+    # Рисуем заголовок
+    draw.text((40, 35), title.upper(), fill=color_hex, font=font_title)
+    draw.line([(40, 75), (img_width - 40, 75)], fill='#1e293b', width=2)
+
+    # Отрисовка участников
+    for idx, (player, count) in enumerate(data):
+        y = header_height + idx * row_height
+
+        # Рамка строки участника
+        draw.rounded_rectangle([40, y, img_width - 40, y + row_height - 10], radius=8, fill='#111827',
+                               outline='#1f2937', width=1)
+
+        # Индикатор медали/места [2]
+        if idx < 3:
+            # Медали: 1 (Золото - #fbbf24), 2 (Серебро - #94a3b8), 3 (Бронза - #b45309)
+            medal_colors = {0: '#fbbf24', 1: '#94a3b8', 2: '#b45309'}
+            draw.ellipse([55, y + 13, 80, y + 38], fill=medal_colors[idx], outline='#000000', width=1)
+            draw.text((64, y + 17), str(idx + 1), fill='#000000', font=font_medium)
+        else:
+            draw.text((60, y + 17), f"{idx + 1}.", fill='#64748b', font=font_large)
+
+        # Имя Фамилия и никнейм [2]
+        draw.text((105, y + 11), player.full_name[:24], fill='#f8fafc', font=font_medium)
+        draw.text((105, y + 33), f"Ник: {player.nickname}", fill='#64748b', font=font_small)
+
+        # Очки
+        val_str = f"{count} {unit}"
+        draw.text((img_width - 150, y + 17), val_str, fill=color_hex, font=font_large)
+
+    bio = io.BytesIO()
+    bio.name = 'leaderboard.png'
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
+async def post_leaderboard_public(update: Update, context: ContextTypes.DEFAULT_TYPE, title: str, data: list, unit: str, color_hex: str):
+    """(Внутренняя) Новая версия для публикации рейтинга изображением с текстовой подписью [2]."""
     chat_id = update.effective_chat.id
+
     if not data:
         message = f"{title}\n\nПока нет данных для составления рейтинга."
+        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
+        return
     else:
-        message = f"{title}\n\n"
+        message = f"🏆 <b>{title}:</b>\n\n"
         medals = ["🥇", "🥈", "🥉"]
         for i, (player, count) in enumerate(data):
             prefix = medals[i] if i < 3 else f"{i + 1}."
-            message += f"{prefix} {player.full_name} - <b>{count}</b> {unit}\n"
+            message += f"{prefix} {escape(player.full_name)} — <b>{count}</b> {unit}\n"
 
     try:
-        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
+        bio = draw_leaderboard_pillow(title, data, unit, color_hex)
+        await context.bot.send_photo(chat_id=chat_id, photo=bio, caption=message, parse_mode='HTML')
     except Exception as e:
-        logger.error(f"Не удалось отправить рейтинг в чат {chat_id}: {e}")
+        logger.error(f"Не удалось сгенерировать графику лидерборда: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=message, parse_mode='HTML')
 
 async def top_scorers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group_admin_permissions(update, context):
@@ -2693,7 +2776,7 @@ async def top_scorers(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with SessionLocal() as session:
         top_data = get_top_scorers_or_assisters(session, action_type='goal', limit=5)
-    await post_leaderboard_public(update, context, "🏆 <b>Топ-5 бомбардиров сообщества</b>", top_data, "голов")
+    await post_leaderboard_public(update, context, "Топ-5 бомбардиров", top_data, "голов", "#fbbf24")
 
 async def top_assisters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group_admin_permissions(update, context):
@@ -2701,7 +2784,7 @@ async def top_assisters(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with SessionLocal() as session:
         top_data = get_top_scorers_or_assisters(session, action_type='assist', limit=5)
-    await post_leaderboard_public(update, context, "🎯 <b>Топ-5 ассистентов сообщества</b>", top_data, "ассистов")
+    await post_leaderboard_public(update, context, "Топ-5 ассистентов", top_data, "ассистов", "#38bdf8")
 
 async def top_frequent_players(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group_admin_permissions(update, context):
@@ -2709,7 +2792,7 @@ async def top_frequent_players(update: Update, context: ContextTypes.DEFAULT_TYP
 
     with SessionLocal() as session:
         top_data = get_top_most_frequent_players(session, limit=10)
-    await post_leaderboard_public(update, context, "🏃‍♂️ <b>Топ-10 самых активных игроков</b>", top_data, "матчей")
+    await post_leaderboard_public(update, context, "Топ-10 активных игроков", top_data, "матчей", "#34d399")
 
 async def top_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_group_admin_permissions(update, context):
@@ -2717,7 +2800,7 @@ async def top_winners(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     with SessionLocal() as session:
         top_data = get_top_winners(session, limit=5)
-    await post_leaderboard_public(update, context, "👑 <b>Топ-5 победителей</b>", top_data, "побед")
+    await post_leaderboard_public(update, context, "Топ-5 победителей", top_data, "побед", "#a78bfa")
 
 
 # --- Настройка подсказок команд Telegram ---
@@ -2797,7 +2880,8 @@ async def post_init(application) -> None:
         BotCommand("log_past_match", "📝 Записать прошедший матч вручную"),
         BotCommand("match_rosters", "📋 Посмотреть составы конкретного матча"),
         BotCommand("list_matches", "⚽ Показать список всех матчей и результаты"),
-        BotCommand("match_result", "🏁 Показать результат и голы конкретного матча")
+        BotCommand("match_result", "🏁 Показать результат и голы конкретного матча"),
+        BotCommand("merge_players", "👥 Слить виртуальный профиль в реальный ТГ-аккаунт")
     ]
     for admin_id in ADMIN_IDS:
         try:
@@ -2913,6 +2997,80 @@ async def search_player_command(update: Update, context: ContextTypes.DEFAULT_TY
 
         if current_msg:
             await update.message.reply_text(current_msg, parse_mode='HTML')
+
+async def merge_players_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /merge_players <виртуальный_ник> <реальный_ник> - Сливает виртуалку в реальный ТГ-профиль."""
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ <b>Неверный формат команды.</b>\n\n"
+            "Используйте:\n"
+            "<code>/merge_players &lt;виртуальный_ник&gt; &lt;реальный_ник&gt;</code>\n\n"
+            "Пример:\n"
+            "<code>/merge_players Sanya_Lysiy Sanya</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    nick_virtual = context.args[0]
+    nick_real = context.args[1]
+
+    with SessionLocal() as session:
+        v_player = get_player_by_nickname(session, nick_virtual)
+        r_player = get_player_by_nickname(session, nick_real)
+
+        if not v_player:
+            await update.message.reply_text(f"❌ Виртуальный игрок с ником '<code>{escape(nick_virtual)}</code>' не найден.", parse_mode='HTML')
+            return
+        if not r_player:
+            await update.message.reply_text(f"❌ Реальный игрок с ником '<code>{escape(nick_real)}</code>' не найден.", parse_mode='HTML')
+            return
+
+        if r_player.tg_id is None or r_player.tg_id < 100000:
+            await update.message.reply_text(f"❌ Ошибка: Игрок '<code>{escape(nick_real)}</code>' не имеет привязанного Telegram-профиля.", parse_mode='HTML')
+            return
+
+        # 1. Перенаправляем все результативные действия (Action) [2]
+        actions_updated = session.query(Action).filter_by(player_id=v_player.id).update({Action.player_id: r_player.id})
+
+        # 2. Перенаправляем участие в матчах (match_players) [2]
+        from sqlalchemy import text
+        session.execute(text(
+            "UPDATE match_players SET player_id = :real_id "
+            "WHERE player_id = :virtual_id "
+            "AND match_id NOT IN (SELECT match_id FROM match_players WHERE player_id = :real_id)"
+        ), {"real_id": r_player.id, "virtual_id": v_player.id})
+
+        # Удаляем дублирующиеся записи из связующей таблицы
+        session.execute(text(
+            "DELETE FROM match_players WHERE player_id = :virtual_id"
+        ), {"virtual_id": v_player.id})
+
+        # 3. Обновляем DraftState (чтобы хронология пиков драфта не побилась) [2]
+        draft_states = session.query(DraftState).all()
+        for ds in draft_states:
+            for side in ['a', 'b']:
+                lst = ds.get_team_list(side)
+                if v_player.id in lst:
+                    lst = [r_player.id if x == v_player.id else x for x in lst]
+                    ds.set_team_list(side, lst)
+            pool_lst = ds.get_pool_list()
+            if v_player.id in pool_lst:
+                pool_lst = [r_player.id if x == v_player.id else x for x in pool_lst]
+                ds.set_pool_list(pool_lst)
+
+        # 4. Удаляем виртуальный профиль [2]
+        session.delete(v_player)
+        session.commit()
+
+        await update.message.reply_text(
+            f"✅ <b>Слияние успешно завершено!</b>\n\n"
+            f"• Виртуальный профиль <code>{v_player.nickname}</code> удален из системы [2].\n"
+            f"• Все его сыгранные матчи, голы (<b>{actions_updated}</b> шт.), ассисты и хронология пиков перенесены на реальный профиль <b>{r_player.full_name}</b> (@{r_player.tg_username}) [2].",
+            parse_mode='HTML'
+        )
 
 
 # --- ИНТЕРАКТИВНЫЙ ДЕПЛОЙ ПРОШЕДШИХ МАТЧЕЙ (РУЧНОЙ ВВОД) ---
@@ -3399,6 +3557,7 @@ def build_app():
     app.add_handler(CommandHandler("list_players", list_players))
     app.add_handler(CommandHandler("add_tournament_result", add_tournament_result))
     app.add_handler(CommandHandler("add_stats", add_stats))
+    app.add_handler(CommandHandler("merge_players", merge_players_command))
 
     # 5. Команды для капитанов
     app.add_handler(CommandHandler("rps", rps_command))
