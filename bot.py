@@ -811,7 +811,7 @@ async def plan_match(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def plan_match_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['plan_info']['field'] = update.message.text.strip()
     await update.message.reply_text(
-        "Шаг 2 из 2: Введите дату и время матча по МСК, в формате 25.06.2026:",
+        "Шаг 2 из 2: Введите дату и время матча по МСК, желательно в формате 25.06.2026, но можно и любой текст(этот текст пойдет ровно после фразы 'Вы играете'):",
         parse_mode='HTML'
     )
     return PLAN_DATETIME
@@ -821,13 +821,13 @@ async def plan_match_datetime(update: Update, context: ContextTypes.DEFAULT_TYPE
     plan_info = context.user_data.pop('plan_info')
     field = plan_info['field']
 
-    announcement = f"Вы играете {dt_text} ? \n Поле: {field}"
+    announcement = f"Вы играете {dt_text} ? \nПоле: {field}"
 
     try:
         poll_message = await context.bot.send_poll(
             chat_id=TARGET_GROUP_ID,
             question=announcement,
-            options=["Иду", "Не иду"],
+            options=["Играю", "Не играю"],
             is_anonymous=False
         )
         planned = context.bot_data.setdefault("planned_matches", [])
