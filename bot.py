@@ -388,6 +388,184 @@ async def register_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='HTML'
         )
 
+
+def draw_match_result_pillow(session: Session, match: Match) -> io.BytesIO:
+    """Генерирует красивую графическую карточку с результатами матча и голевыми действиями [2]."""
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+
+    # Получаем капитанов
+    cap_a = get_player_by_tgid(session, match.captain_a_id)
+    cap_b = get_player_by_tgid(session, match.captain_b_id)
+    name_a = f"{cap_a.full_name}_team" if cap_a else "Команда А"
+    name_b = f"{cap_b.full_name}_team" if cap_b else "Команда Б"
+
+    # Сбор голевых действий
+    actions = session.query(Action).filter_by(match_id=match.id).all()
+    players_actions = {}
+    for action in actions:
+        players_actions.setdefault(action.player_id, []).append(action.action_type)
+
+    # Размеры холста
+    img_width = 750
+    row_height = 65
+    header_height = 130
+    img_height = header_height + max(len(players_actions), 1) * row_height + 40
+    if img_height < 450:
+        img_height = 450
+
+    img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')  # Темная тема
+    draw = ImageDraw.Draw(img)
+
+    # Точечная сетка
+    for dx in range(0, img_width, 20):
+        for dy in range(0, img_height, 20):
+            draw.point((dx, dy), fill='#1c1c1f')
+
+    # Шрифты из контейнера Docker
+    try:
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+        font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
+    except IOError:
+        try:
+            font_small = ImageFont.truetype("DejaVuSans.ttf", 11)
+            font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
+            font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+            font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
+        except IOError:
+            font_small = font_medium = font_large = font_score = ImageFont.load_default()
+
+    # Отрисовка табло (Счета)
+    draw.text((50, 45), name_a[:22], fill='#f43f5e', font=font_large)  # Красный
+    score_str = f"{match.score_a} - {match.score_b}"
+    draw.text((375 - 45, 32), score_str, fill='#fbbf24', font=font_score)  # Золотой счет
+    draw.text((700 - 150, 45), name_b[:22], fill='#38bdf8', font=font_large)  # Синий
+
+    draw.line([(40, 105), (img_width - 40, 105)], fill='#1f2937', width=2)
+
+    # Отрисовка списка голевых действий [2]
+    if not players_actions:
+        draw.text((80, 180), "Статистика голов и пасов для этого матча пуста", fill='#8a8a93', font=font_large)
+    else:
+        for idx, (player_id, act_list) in enumerate(players_actions.items()):
+            y = header_height + idx * row_height
+            player = session.get(Player, player_id)
+            p_name = f"{player.full_name} ({player.nickname})" if player else f"ID {player_id}"
+
+            # Рамка строки
+            draw.rounded_rectangle([40, y, img_width - 40, y + row_height - 10], radius=8, fill='#121214',
+                                   outline='#1f2937', width=1)
+            draw.text((60, y + 15), p_name[:35], fill='#f8fafc', font=font_medium)
+
+            # Выводим смайлы голов и пасов [2]
+            goals = act_list.count('goal')
+            assists = act_list.count('assist')
+
+            action_parts = []
+            if goals > 0:
+                action_parts.append(f"x{goals} Goal ⚽")
+            if assists > 0:
+                action_parts.append(f"x{assists} Pass 🎯")
+
+            action_str = "   ".join(action_parts)
+            draw.text((img_width - 240, y + 13), action_str, fill='#fbbf24', font=font_large)
+
+    bio = io.BytesIO()
+    bio.name = 'match_result.png'
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
+def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.BytesIO]:
+    """Генерирует красивую двухколоночную карточку с составами команд в порядке пиков драфта [2]."""
+    from PIL import Image, ImageDraw, ImageFont
+    import io
+
+    ds = match.draft
+    if not ds:
+        return None
+
+    team_a_ids = ds.get_team_list('a')
+    team_b_ids = ds.get_team_list('b')
+
+    cap_a = session.get(Player, team_a_ids[0])
+    cap_b = session.get(Player, team_b_ids[0])
+    name_a = f"{cap_a.full_name}_team" if cap_a else "Команда А"
+    name_b = f"{cap_b.full_name}_team" if cap_b else "Команда Б"
+
+    color_a = ds.team_a_color if ds.team_a_color else "🔴"
+    color_b = ds.team_b_color if ds.team_b_color else "🔵"
+    color_a_hex = '#f43f5e' if color_a == "🔴" else '#38bdf8'
+    color_b_hex = '#38bdf8' if color_b == "🔵" else '#f43f5e'
+
+    img_width = 800
+    row_height = 55
+    header_height = 120
+    max_players = max(len(team_a_ids), len(team_b_ids))
+    img_height = header_height + max_players * row_height + 50
+    if img_height < 450:
+        img_height = 450
+
+    img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')
+    draw = ImageDraw.Draw(img)
+
+    for dx in range(0, img_width, 20):
+        for dy in range(0, img_height, 20):
+            draw.point((dx, dy), fill='#1c1c1f')
+
+    try:
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
+        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+        font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
+    except IOError:
+        try:
+            font_small = ImageFont.truetype("DejaVuSans.ttf", 10)
+            font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
+            font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
+        except IOError:
+            font_small = font_medium = font_large = ImageFont.load_default()
+
+    # Заголовок Команда А VS Команда Б
+    draw.text((50, 45), name_a[:24], fill=color_a_hex, font=font_large)
+    draw.text((400 - 15, 45), "VS", fill='#fbbf24', font=font_large)
+    draw.text((800 - 280, 45), name_b[:24], fill=color_b_hex, font=font_large)
+
+    draw.line([(40, 95), (img_width - 40, 95)], fill='#1f2937', width=2)
+
+    # Левая колонка (Команда А) [2]
+    for idx, pid in enumerate(team_a_ids):
+        y = header_height + idx * row_height
+        p = session.get(Player, pid)
+        if p:
+            p_name = f"{p.full_name} ({p.nickname})"
+            p_label = "👑 (к)" if idx == 0 else f"Выбор №{idx}"
+
+            draw.rounded_rectangle([40, y, 380, y + row_height - 10], radius=8, fill='#121214', outline='#1f2937',
+                                   width=1)
+            draw.text((55, y + 14), p_name[:32], fill='#f8fafc', font=font_medium)
+            draw.text((310, y + 15), p_label, fill='#8a8a93', font=font_small)
+
+    # Правая колонка (Команда Б) [2]
+    for idx, pid in enumerate(team_b_ids):
+        y = header_height + idx * row_height
+        p = session.get(Player, pid)
+        if p:
+            p_name = f"{p.full_name} ({p.nickname})"
+            p_label = "👑 (к)" if idx == 0 else f"Выбор №{idx}"
+
+            draw.rounded_rectangle([420, y, 760, y + row_height - 10], radius=8, fill='#121214', outline='#1f2937',
+                                   width=1)
+            draw.text((435, y + 14), p_name[:32], fill='#f8fafc', font=font_medium)
+            draw.text((690, y + 15), p_label, fill='#8a8a93', font=font_small)
+
+    bio = io.BytesIO()
+    bio.name = 'match_lineup.png'
+    img.save(bio, 'PNG')
+    bio.seek(0)
+    return bio
+
 async def match_rosters(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Для всех в ЛС и Группах) /match_rosters <ID_матча> - Показывает составы и статус конкретного матча."""
     if not await check_group_admin_permissions(update, context):
@@ -448,12 +626,22 @@ async def match_rosters(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📋 <b>Информация о матче №{match.id}</b>{tour_info}:\n"
             f"• Статус: {status_info}{score_info}\n\n"
             f"{color_a} <b>Команда А</b>\n"
-            f"{draft_ordered_roster_to_display(session, team_a_ids)}\n\n"
+            f"{player_list_to_display(session, team_a_ids, sort_alphabetically=False)}\n\n"
             f"{color_b} <b>Команда Б</b>\n"
-            f"{draft_ordered_roster_to_display(session, team_b_ids)}"
+            f"{player_list_to_display(session, team_b_ids, sort_alphabetically=False)}"
         )
 
-        await update.message.reply_text(msg, parse_mode='HTML')
+        try:
+            bio = draw_match_lineup_pillow(session, match)
+            if bio:
+                short_caption = f"📋 <b>Составы игравших команд (Матч №{match.id})</b>"
+                await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
+                return
+            else:
+                await update.message.reply_text(msg, parse_mode='HTML')
+        except Exception as img_err:
+            logger.error(f"Не удалось сгенерировать графику составов: {img_err}")
+            await update.message.reply_text(msg, parse_mode='HTML')
 
 async def match_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Для всех) /match_result <ID_матча> - Показывает только результаты и авторов голов/пасов (без вывода составов) [2]."""
@@ -538,7 +726,14 @@ async def match_result(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{actions_text}"
         )
 
-        await update.message.reply_text(msg, parse_mode='HTML')
+        try:
+            bio = draw_match_result_pillow(session, match)
+            short_caption = f"🏆 <b>Результаты матча №{match.id}</b>"
+            await update.message.reply_photo(photo=bio, caption=short_caption, parse_mode='HTML')
+            return
+        except Exception as img_err:
+            logger.error(f"Не удалось сгенерировать графику результатов: {img_err}")
+            await update.message.reply_text(msg, parse_mode='HTML')
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await help_command(update, context)
@@ -1657,6 +1852,11 @@ async def color_choice_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def publish_draft_results(context: ContextTypes.DEFAULT_TYPE, session: Session, match_id: int):
     """Публикует и рассылает результаты драфта с сохранением порядка пиков."""
     match = session.get(Match, match_id)
+
+    if not match:
+        logger.error(f"Матч №{match_id} не найден в базе данных.")
+        return
+
     ds = match.draft
     match.status = MatchStatus.ACTIVE
     session.commit()
@@ -1670,12 +1870,12 @@ async def publish_draft_results(context: ContextTypes.DEFAULT_TYPE, session: Ses
     # Рассылка в ЛС капитанам
     await context.bot.send_message(
         chat_id=cap_a.tg_id,
-        text=f"✅ <b>Драфт успешно завершен!</b>\n\n<b>Ваша команда ({color_a}):</b>\n{draft_ordered_roster_to_display(session, team_a_ids)}",
+        text=f"✅ <b>Драфт успешно завершен!</b>\n\n<b>Ваша команда ({color_a}):</b>\n{player_list_to_display(session, team_a_ids, sort_alphabetically=False)}",
         parse_mode='HTML'
     )
     await context.bot.send_message(
         chat_id=cap_b.tg_id,
-        text=f"✅ <b>Драфт успешно завершен!</b>\n\n<b>Ваша команда ({color_b}):</b>\n{draft_ordered_roster_to_display(session, team_b_ids)}",
+        text=f"✅ <b>Драфт успешно завершен!</b>\n\n<b>Ваша команда ({color_b}):</b>\n{player_list_to_display(session, team_b_ids, sort_alphabetically=False)}",
         parse_mode='HTML'
     )
 
@@ -1686,15 +1886,26 @@ async def publish_draft_results(context: ContextTypes.DEFAULT_TYPE, session: Ses
             pairing = match.pairing
             tour_info = f" ({pairing.tournament.name} | {pairing.stage})"
 
-        await context.bot.send_message(
-            chat_id=TARGET_GROUP_ID,
-            text=f"✅ <b>Драфт завершен! Составы на матч №{match.id}{tour_info}:</b>\n\n"
-                 f"{color_a} <b>Команда А</b>\n"
-                 f"{draft_ordered_roster_to_display(session, team_a_ids)}\n\n"
-                 f"{color_b} <b>Команда Б</b>\n"
-                 f"{draft_ordered_roster_to_display(session, team_b_ids)}",
-            parse_mode='HTML'
+        group_caption = f"✅ <b>Драфт завершен! Составы на матч №{match.id}{tour_info}:</b>"
+        group_text = (
+            f"✅ <b>Драфт завершен! Составы на матч №{match.id}{tour_info}:</b>\n\n"
+            f"{color_a} <b>Команда А</b>\n"
+            f"{player_list_to_display(session, team_a_ids, sort_alphabetically=False)}\n\n"
+            f"{color_b} <b>Команда Б</b>\n"
+            f"{player_list_to_display(session, team_b_ids, sort_alphabetically=False)}"
         )
+
+        try:
+            bio_group = draw_match_lineup_pillow(session, match)
+            if bio_group:
+                await context.bot.send_photo(chat_id=TARGET_GROUP_ID, photo=bio_group, caption=group_caption,
+                                             parse_mode='HTML')
+                await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=group_text, parse_mode='HTML')
+        except Exception as img_err:
+            logger.error(f"Не удалось отправить графику составов в группу: {img_err}")
+            await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=group_text, parse_mode='HTML')
+
+
 
 async def give_step1_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Внутренняя) Шаг 1 драфта: Выбор первого игрока из пары."""
@@ -1824,8 +2035,8 @@ async def choose_from_pair_callback(update: Update, context: ContextTypes.DEFAUL
 
         team_a_ids, team_b_ids = ds.get_team_list('a'), ds.get_team_list('b')
         msg = (f"Пул оставшихся:\n{player_list_to_display(session, ds.get_pool_list())}\n\n"
-               f"Команда A:\n{player_list_to_display(session, team_a_ids, False)}\n\n"
-               f"Команда B:\n{player_list_to_display(session, team_b_ids, False)}")
+               f"Команда A:\n{player_list_to_display(session, team_a_ids, sort_alphabetically=False)}\n\n"
+               f"Команда B:\n{player_list_to_display(session, team_b_ids, sort_alphabetically=False)}")
 
         await context.bot.send_message(chat_id=match.captain_a_id, text=msg)
         await context.bot.send_message(chat_id=match.captain_b_id, text=msg)
@@ -1948,7 +2159,14 @@ async def done_actions(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{actions_text}"
             )
 
-            await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=group_msg, parse_mode='HTML')
+            try:
+                # Генерируем картинку табло [2]
+                bio = draw_match_result_pillow(session, match)
+                short_caption = f"🏁 <b>Матч №{match_id} завершен!</b>"
+                await context.bot.send_photo(chat_id=TARGET_GROUP_ID, photo=bio, caption=short_caption,
+                                             parse_mode='HTML')
+            except Exception as img_err:
+                await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=group_msg, parse_mode='HTML')
 
 async def player_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Любой в ЛС) Показывает форму за 5 последних матчей."""
@@ -2883,7 +3101,8 @@ async def post_init(application) -> None:
         BotCommand("match_rosters", "📋 Посмотреть составы конкретного матча"),
         BotCommand("list_matches", "⚽ Показать список всех матчей и результаты"),
         BotCommand("match_result", "🏁 Показать результат и голы конкретного матча"),
-        BotCommand("merge_players", "👥 Слить виртуальный профиль в реальный ТГ-аккаунт")
+        BotCommand("merge_players", "👥 Слить виртуальный профиль в реальный ТГ-аккаунт"),
+        BotCommand("substitute_player", "🔄 Сделать автозамену игрока после драфта"),
     ]
     for admin_id in ADMIN_IDS:
         try:
@@ -3073,6 +3292,120 @@ async def merge_players_command(update: Update, context: ContextTypes.DEFAULT_TY
             f"• Все его сыгранные матчи, голы (<b>{actions_updated}</b> шт.), ассисты и хронология пиков перенесены на реальный профиль <b>{r_player.full_name}</b> (@{r_player.tg_username}) [2].",
             parse_mode='HTML'
         )
+
+async def substitute_player(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Админ в ЛС) /substitute_player <ID_матча> <old_nickname> <new_nickname> - Заменяет игрока в активном матче."""
+    if update.effective_user.id not in ADMIN_IDS or update.effective_chat.type != 'private':
+        return
+
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "⚠️ <b>Неверный формат команды.</b>\n\n"
+            "Используйте:\n"
+            "<code>/substitute_player &lt;ID_матча&gt; &lt;Ник_старого&gt; &lt;Ник_нового&gt;</code>\n\n"
+            "Пример:\n"
+            "<code>/substitute_player 1 Sergey Sergey_New</code>",
+            parse_mode='HTML'
+        )
+        return
+
+    try:
+        match_id = int(context.args[0])
+        old_nick = context.args[1]
+        new_nick = context.args[2]
+    except ValueError:
+        await update.message.reply_text("❌ Ошибка: ID матча должен быть числом.")
+        return
+
+    with SessionLocal() as session:
+        match = session.get(Match, match_id)
+        if not match:
+            await update.message.reply_text(f"❌ Матч №{match_id} не найден.")
+            return
+
+        if match.status in [MatchStatus.FINISHED, MatchStatus.CANCELLED]:
+            await update.message.reply_text("❌ Ошибка: Нельзя производить замену в завершенном или отмененном матче.")
+            return
+
+        old_player = get_player_by_nickname(session, old_nick)
+        new_player = get_player_by_nickname(session, new_nick)
+
+        if not old_player:
+            await update.message.reply_text(f"❌ Игрок '<code>{escape(old_nick)}</code>' не найден в БД.",
+                                            parse_mode='HTML')
+            return
+        if not new_player:
+            await update.message.reply_text(f"❌ Игрок '<code>{escape(new_nick)}</code>' не найден в БД.",
+                                            parse_mode='HTML')
+            return
+
+        # Проверяем, играет ли старый игрок в матче [2]
+        if old_player not in match.players:
+            await update.message.reply_text(
+                f"❌ Игрок <b>{escape(old_player.full_name)}</b> не заявлен на матч №{match_id}.", parse_mode='HTML')
+            return
+
+        # Проверяем, не заявлен ли уже новый игрок [2]
+        if new_player in match.players:
+            await update.message.reply_text(f"❌ Игрок <b>{escape(new_player.full_name)}</b> уже играет в этом матче.",
+                                            parse_mode='HTML')
+            return
+
+        # 1. Заменяем в общем списке участников матча [2]
+        match.players.remove(old_player)
+        match.players.append(new_player)
+
+        # 2. Обновляем DraftState (заменяем ID в командах) [2]
+        ds = match.draft
+        team_changed = None
+        if ds:
+            for side in ['a', 'b']:
+                lst = ds.get_team_list(side)
+                if old_player.id in lst:
+                    lst = [new_player.id if x == old_player.id else x for x in lst]
+                    ds.set_team_list(side, lst)
+
+            pool_lst = ds.get_pool_list()
+            if old_player.id in pool_lst:
+                pool_lst = [new_player.id if x == old_player.id else x for x in pool_lst]
+                ds.set_pool_list(pool_lst)
+
+        # 3. Если старый игрок был капитаном матча, обновляем TG ID [2]
+        if match.captain_a_id == old_player.tg_id:
+            match.captain_a_id = new_player.tg_id
+        elif match.captain_b_id == old_player.tg_id:
+            match.captain_b_id = new_player.tg_id
+
+        # 4. Если это был турнирный матч и старый игрок был капитаном в сетке [2]
+        if match.tournament_pairing_id:
+            pairing = match.pairing
+            if pairing.captain_a_id == old_player.tg_id:
+                pairing.captain_a_id = new_player.tg_id
+            elif pairing.captain_b_id == old_player.tg_id:
+                pairing.captain_b_id = new_player.tg_id
+
+        session.commit()
+
+        # Анонс в группу
+        ann_text = (
+            f"🔄 <b>Замена в составе матча №{match_id}!</b>\n\n"
+            f"Игрок <b>{escape(old_player.full_name)}</b> (@{escape(old_player.tg_username or '')}) не сможет приехать.\n"
+            f"Вместо него в игру вступает <b>{escape(new_player.full_name)}</b> (@{escape(new_player.tg_username or '')})!"
+        )
+
+        await update.message.reply_text(
+            f"✅ Игрок успешно заменен.\n\n"
+            f"• Удален: <b>{escape(old_player.full_name)}</b>\n"
+            f"• Добавлен: <b>{escape(new_player.full_name)}</b>\n"
+            f"• Изменения внесены в списки и составы.",
+            parse_mode='HTML'
+        )
+
+        if TARGET_GROUP_ID:
+            try:
+                await context.bot.send_message(chat_id=TARGET_GROUP_ID, text=ann_text, parse_mode='HTML')
+            except Exception as e:
+                logger.error(f"Не удалось отправить анонс замены в группу: {e}")
 
 
 # --- ИНТЕРАКТИВНЫЙ ДЕПЛОЙ ПРОШЕДШИХ МАТЧЕЙ (РУЧНОЙ ВВОД) ---
@@ -3560,6 +3893,7 @@ def build_app():
     app.add_handler(CommandHandler("add_tournament_result", add_tournament_result))
     app.add_handler(CommandHandler("add_stats", add_stats))
     app.add_handler(CommandHandler("merge_players", merge_players_command))
+    app.add_handler(CommandHandler("substitute_player", substitute_player))
 
     # 5. Команды для капитанов
     app.add_handler(CommandHandler("rps", rps_command))
