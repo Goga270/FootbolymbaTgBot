@@ -439,10 +439,10 @@ def draw_match_result_pillow(session: Session, match: Match) -> io.BytesIO:
             font_small = font_medium = font_large = font_score = ImageFont.load_default()
 
     # Отрисовка табло (Счета)
-    draw.text((50, 45), name_a[:36], fill='#f43f5e', font=font_large)  # Красный
+    draw.text((50, 45), name_a[:50], fill='#f43f5e', font=font_large)  # Красный
     score_str = f"{match.score_a} - {match.score_b}"
     draw.text((400 - 45, 32), score_str, fill='#fbbf24', font=font_score)  # Золотой счет
-    draw.text((800 - 300, 45), name_b[:36], fill='#38bdf8', font=font_large)  # Синий
+    draw.text((800 - 350, 45), name_b[:50], fill='#38bdf8', font=font_large)  # Синий
 
     draw.line([(40, 105), (img_width - 40, 105)], fill='#1f2937', width=2)
 
@@ -558,9 +558,9 @@ def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.Byte
             font_small = font_medium = font_large = ImageFont.load_default()
 
     # Заголовок Команда А VS Команда Б
-    draw.text((50, 45), name_a[:36], fill=color_a_hex, font=font_large)
+    draw.text((50, 45), name_a[:50], fill=color_a_hex, font=font_large)
     draw.text((400 - 15, 45), "VS", fill='#fbbf24', font=font_large)
-    draw.text((800 - 280, 45), name_b[:36], fill=color_b_hex, font=font_large)
+    draw.text((800 - 350, 45), name_b[:50], fill=color_b_hex, font=font_large)
 
     draw.line([(40, 95), (img_width - 40, 95)], fill='#1f2937', width=2)
 
@@ -569,8 +569,8 @@ def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.Byte
         y = header_height + idx * row_height
         p = session.get(Player, pid)
         if p:
-            p_name = f"{p.full_name[:50]})"
-            p_label = "(К)" if idx == 0 else f""
+            p_name = f"{p.full_name[:50]}"
+            p_label = "К" if idx == 0 else f""
 
             draw.rounded_rectangle([40, y, 380, y + row_height - 10], radius=8, fill='#121214', outline='#1f2937',
                                    width=1)
