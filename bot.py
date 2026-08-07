@@ -1573,6 +1573,23 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if match.status != MatchStatus.CREATED:
             return await update.message.reply_text("Матч уже в процессе драфта, активен или завершён.")
 
+        cap_a = session.query(Player).filter(Player.tg_id == match.captain_a_id).first()
+        cap_b = session.query(Player).filter(Player.tg_id == match.captain_b_id).first()
+
+        if not (cap_a and cap_b):
+            return await update.message.reply_text("❌ Ошибка: Капитаны не найдены.")
+
+        # ЗАЩИТА: Блокируем запуск интерактивного драфта для виртуальных игроков (ID < 100000) [2]
+        if cap_a.tg_id < 100000 or cap_b.tg_id < 100000:
+            return await update.message.reply_text(
+                "❌ <b>Драфт не может быть запущен.</b>\n\n"
+                "Один или оба капитана являются виртуальными игроками (у них нет реального аккаунта Telegram) [2].\n"
+                "Провести интерактивный выбор игроков через кнопки невозможно [2].\n\n"
+                "Вы можете провести матч в реальной жизни, а результат сразу зафиксировать командой:\n"
+                f"<code>/finish_match {match.id} СчетА-СчетБ</code> [2]",
+                parse_mode='HTML'
+            )
+
         match.status = MatchStatus.DRAFTING
         ds = match.draft
         if not ds:
@@ -1601,11 +1618,19 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=match.captain_b_id, text=msg, parse_mode='HTML')
 
                 win_chat = match.captain_a_id if ds.rps_winner == 'a' else match.captain_b_id
+
+                decision_buttons = [
+                    [
+                        InlineKeyboardButton("🤝 Отдать первую пару", callback_data=f"rps_decide:{match.id}:give"),
+                        InlineKeyboardButton("👑 Выбирать первым", callback_data=f"rps_decide:{match.id}:choose")
+                    ]
+                ]
                 await context.bot.send_message(
                     chat_id=win_chat,
-                    text=f"👑 <b>Вы победили!</b> Выберите стратегию драфта в ЛС:\n"
-                         f"• Отдать первую пару: <code>/rps_decision {match.id} give</code>\n"
-                         f"• Выбирать первым: <code>/rps_decision {match.id} choose</code>",
+                    text=f"👑 <b>Вы победили!</b> Выберите стратегию драфта кнопкой:\n\n"
+                         f"• <b>🤝 Отдать первую пару:</b> вы даете пару первым (соперник выбирает первым, вы забираете оставшегося)\n"
+                         f"• <b>👑 Выбирать первым:</b> соперник дает пару первым (вы выбираете первым, соперник забирает оставшегося)",
+                    reply_markup=InlineKeyboardMarkup(decision_buttons),
                     parse_mode='HTML'
                 )
                 session.commit()
@@ -1617,18 +1642,151 @@ async def start_draft(update: Update, context: ContextTypes.DEFAULT_TYPE):
         session.commit()
 
         try:
-            msg = (
-                f"🎲 <b>Матч №{match.id}</b>: сыграйте в «Камень, Ножницы, Бумага»!\n\n"
-                f"Отправьте боту в ЛС одну из команд:\n"
-                f"• <code>/rps {match.id} камень</code>\n"
-                f"• <code>/rps {match.id} ножницы</code>\n"
-                f"• <code>/rps {match.id} бумага</code>"
-            )
-            await context.bot.send_message(chat_id=match.captain_a_id, text=msg, parse_mode='HTML')
-            await context.bot.send_message(chat_id=match.captain_b_id, text=msg, parse_mode='HTML')
-            await update.message.reply_text(f"✅ Приглашения сыграть в КНБ успешно отправлены капитанам.")
+            buttons = [
+                [
+                    InlineKeyboardButton("🪨 Камень", callback_data=f"rps_play:{match.id}:камень"),
+                    InlineKeyboardButton("✂️ Ножницы", callback_data=f"rps_play:{match.id}:ножницы"),
+                    InlineKeyboardButton("📄 Бумага", callback_data=f"rps_play:{match.id}:бумага")
+                ]
+            ]
+            msg = f"🎲 <b>Матч №{match.id}</b>: сыграйте в «Камень, Ножницы, Бумага»! Выберите ваш ход кнопкой:"
+            await context.bot.send_message(chat_id=match.captain_a_id, text=msg,
+                                           reply_markup=InlineKeyboardMarkup(buttons), parse_mode='HTML')
+            await context.bot.send_message(chat_id=match.captain_b_id, text=msg,
+                                           reply_markup=InlineKeyboardMarkup(buttons), parse_mode='HTML')
+            await update.message.reply_text(f"✅ Приглашения сыграть в КНБ на кнопках успешно отправлены капитанам.")
         except Exception as e:
             await update.message.reply_text(f"Не удалось отправить сообщение капитанам: {e}")
+
+
+async def rps_play_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Обрабатывает выбор хода КНБ через инлайн-кнопки [2]."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(':')
+    match_id = int(parts[1])
+    choice = parts[2]
+
+    with SessionLocal() as session:
+        match = session.get(Match, match_id)
+        if not (match and match.draft):
+            return
+
+        ds = match.draft
+        user_id = update.effective_user.id
+
+        if user_id == match.captain_a_id:
+            side = 'a'
+        elif user_id == match.captain_b_id:
+            side = 'b'
+        else:
+            await query.answer("❌ Вы не являетесь капитаном этого матча!", show_alert=True)
+            return
+
+        # Защита: не даем проголосовать дважды
+        if getattr(ds, f'rps_choice_{side}'):
+            await query.answer("⚠️ Вы уже сделали свой выбор!", show_alert=True)
+            return
+
+        setattr(ds, f'rps_choice_{side}', choice)
+        await query.edit_message_text(f"✅ Вы выбрали: <b>{choice.capitalize()}</b>. Ожидаем выбор соперника...",
+                                      parse_mode='HTML')
+
+        # Если оба сделали выбор
+        if ds.rps_choice_a and ds.rps_choice_b:
+            winner = rps_winner(ds.rps_choice_a, ds.rps_choice_b)
+
+            cap_a = session.get(Player, match.captain_a_id)
+            cap_b = session.get(Player, match.captain_b_id)
+
+            if winner is None:
+                # Ничья: сбрасываем и предлагаем заново на кнопках [2]
+                ds.rps_choice_a = None
+                ds.rps_choice_b = None
+                session.commit()
+
+                retry_buttons = [
+                    [
+                        InlineKeyboardButton("🪨 Камень", callback_data=f"rps_play:{match.id}:камень"),
+                        InlineKeyboardButton("✂️ Ножницы", callback_data=f"rps_play:{match.id}:ножницы"),
+                        InlineKeyboardButton("📄 Бумага", callback_data=f"rps_play:{match.id}:бумага")
+                    ]
+                ]
+                retry_msg = f"🤝 <b>Ничья!</b> Оба выбрали <code>{choice.capitalize()}</code>. Повторите ваш выбор кнопкой:"
+
+                await context.bot.send_message(chat_id=match.captain_a_id, text=retry_msg,
+                                               reply_markup=InlineKeyboardMarkup(retry_buttons), parse_mode='HTML')
+                await context.bot.send_message(chat_id=match.captain_b_id, text=retry_msg,
+                                               reply_markup=InlineKeyboardMarkup(retry_buttons), parse_mode='HTML')
+            else:
+                ds.rps_winner = winner
+                winner_side_text = winner.upper()
+                winner_tg_id = match.captain_a_id if winner == 'a' else match.captain_b_id
+                winner_player = session.query(Player).filter(Player.tg_id == winner_tg_id).first()
+                winner_name = winner_player.full_name if winner_player else f"Капитан {winner_side_text}"
+
+                msg = f"🏁 <b>Результат КНБ:</b> победил <b>{escape(winner_name)}</b> (Капитан {winner_side_text})!"
+                await context.bot.send_message(chat_id=match.captain_a_id, text=msg, parse_mode='HTML')
+                await context.bot.send_message(chat_id=match.captain_b_id, text=msg, parse_mode='HTML')
+
+                winner_chat = match.captain_a_id if winner == 'a' else match.captain_b_id
+
+                decision_buttons = [
+                    [
+                        InlineKeyboardButton("🤝 Отдать первую пару", callback_data=f"rps_decide:{match.id}:give"),
+                        InlineKeyboardButton("👑 Выбирать первым", callback_data=f"rps_decide:{match.id}:choose")
+                    ]
+                ]
+                await context.bot.send_message(
+                    chat_id=winner_chat,
+                    text=f"👑 <b>Вы победили в КНБ!</b> Выберите вашу стратегию драфта кнопкой:\n\n"
+                         f"• <b>🤝 Отдать первую пару:</b> вы даете пару первым (соперник выбирает первым, вы забираете оставшегося)\n"
+                         f"• <b>👑 Выбирать первым:</b> соперник дает пару первым (вы выбираете первым, соперник забирает оставшегося)",
+                    reply_markup=InlineKeyboardMarkup(decision_buttons),
+                    parse_mode='HTML'
+                )
+        session.commit()
+
+async def rps_decide_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """(Внутренняя) Принимает решение по стратегии драфта КНОПКОЙ и запускает первый ход [2]."""
+    query = update.callback_query
+    await query.answer()
+
+    parts = query.data.split(':')
+    match_id = int(parts[1])
+    decision = parts[2]
+
+    with SessionLocal() as session:
+        match = session.get(Match, match_id)
+        if not (match and match.draft and match.draft.rps_winner):
+            return
+
+        ds = match.draft
+        expected_winner_player = session.query(Player).filter(
+            Player.tg_id == (match.captain_a_id if ds.rps_winner == 'a' else match.captain_b_id)).first()
+        if not expected_winner_player or update.effective_user.id != expected_winner_player.tg_id:
+            await query.answer("❌ Это не ваш выбор решения!", show_alert=True)
+            return
+
+        # Устанавливаем очередность хода
+        ds.turn = ds.rps_winner if decision == 'give' else ('a' if ds.rps_winner == 'b' else 'b')
+        session.commit()
+
+        decision_text = "Вы решили отдать первую пару сопернику." if decision == 'give' else "Вы решили выбирать первым."
+        await query.edit_message_text(f"✅ Решение принято: <b>{decision_text}</b>", parse_mode='HTML')
+
+        team_a_ids, team_b_ids = ds.get_team_list('a'), ds.get_team_list('b')
+        start_msg = (
+            f"📋 <b>Начало драфта!</b>\n\n"
+            f"Пул доступных игроков:\n{player_list_to_display(session, ds.get_pool_list())}\n\n"
+            f"Команда A:\n{player_list_to_display(session, team_a_ids, sort_alphabetically=False)}\n\n"
+            f"Команда B:\n{player_list_to_display(session, team_b_ids, sort_alphabetically=False)}"
+        )
+        await context.bot.send_message(chat_id=match.captain_a_id, text=start_msg, parse_mode='HTML')
+        await context.bot.send_message(chat_id=match.captain_b_id, text=start_msg, parse_mode='HTML')
+
+        await proceed_to_draft_turn(context, session, match.id)
 
 async def rps_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """(Капитан в ЛС) /rps <match_id> <камень|ножницы|бумага>"""
@@ -3934,6 +4092,8 @@ def build_app():
     app.add_handler(CallbackQueryHandler(give_step2_callback, pattern=r'^give_step2:'))
     app.add_handler(CallbackQueryHandler(choose_from_pair_callback, pattern=r'^choose_from_pair:'))
     app.add_handler(CallbackQueryHandler(color_choice_callback, pattern=r'^color_choice:'))
+    app.add_handler(CallbackQueryHandler(rps_play_callback, pattern=r'^rps_play:'))
+    app.add_handler(CallbackQueryHandler(rps_decide_callback, pattern=r'^rps_decide:'))
 
     # 7. Системное
     app.add_handler(PollAnswerHandler(handle_poll_answer))
