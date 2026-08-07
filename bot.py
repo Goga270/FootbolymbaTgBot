@@ -3,6 +3,7 @@ import random
 from typing import List, Optional
 from html import escape
 import io
+import math
 
 from config import TELEGRAM_TOKEN, ADMIN_IDS, RPS_OPTIONS, TARGET_GROUP_ID
 from database import (
@@ -407,14 +408,14 @@ def draw_match_result_pillow(session: Session, match: Match) -> io.BytesIO:
         players_actions.setdefault(action.player_id, []).append(action.action_type)
 
     # Размеры холста
-    img_width = 750
-    row_height = 65
-    header_height = 130
-    img_height = header_height + max(len(players_actions), 1) * row_height + 40
+    img_width = 800
+    row_height = 55
+    header_height = 120
+    img_height = header_height + max(len(players_actions), 1) * row_height + 50
     if img_height < 450:
         img_height = 450
 
-    img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')  # Темная тема
+    img = Image.new('RGB', (img_width, img_height), color='#0c0c0e')
     draw = ImageDraw.Draw(img)
 
     # Точечная сетка
@@ -424,13 +425,13 @@ def draw_match_result_pillow(session: Session, match: Match) -> io.BytesIO:
 
     # Шрифты из контейнера Docker
     try:
-        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 11)
+        font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
         font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
         font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
         font_score = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 36)
     except IOError:
         try:
-            font_small = ImageFont.truetype("DejaVuSans.ttf", 11)
+            font_small = ImageFont.truetype("DejaVuSans.ttf", 10)
             font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
             font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
             font_score = ImageFont.truetype("DejaVuSans-Bold.ttf", 36)
@@ -438,39 +439,68 @@ def draw_match_result_pillow(session: Session, match: Match) -> io.BytesIO:
             font_small = font_medium = font_large = font_score = ImageFont.load_default()
 
     # Отрисовка табло (Счета)
-    draw.text((50, 45), name_a[:22], fill='#f43f5e', font=font_large)  # Красный
+    draw.text((50, 45), name_a[:36], fill='#f43f5e', font=font_large)  # Красный
     score_str = f"{match.score_a} - {match.score_b}"
-    draw.text((375 - 45, 32), score_str, fill='#fbbf24', font=font_score)  # Золотой счет
-    draw.text((700 - 150, 45), name_b[:22], fill='#38bdf8', font=font_large)  # Синий
+    draw.text((400 - 45, 32), score_str, fill='#fbbf24', font=font_score)  # Золотой счет
+    draw.text((800 - 300, 45), name_b[:36], fill='#38bdf8', font=font_large)  # Синий
 
     draw.line([(40, 105), (img_width - 40, 105)], fill='#1f2937', width=2)
 
-    # Отрисовка списка голевых действий [2]
+    # Отрисовка списка голевых действий
     if not players_actions:
         draw.text((80, 180), "Статистика голов и пасов для этого матча пуста", fill='#8a8a93', font=font_large)
     else:
         for idx, (player_id, act_list) in enumerate(players_actions.items()):
             y = header_height + idx * row_height
             player = session.get(Player, player_id)
-            p_name = f"{player.full_name} ({player.nickname})" if player else f"ID {player_id}"
+            p_name = f"{player.full_name[:45]}" if player else f"ID {player_id}"
 
             # Рамка строки
             draw.rounded_rectangle([40, y, img_width - 40, y + row_height - 10], radius=8, fill='#121214',
                                    outline='#1f2937', width=1)
             draw.text((60, y + 15), p_name[:35], fill='#f8fafc', font=font_medium)
 
-            # Выводим смайлы голов и пасов [2]
             goals = act_list.count('goal')
             assists = act_list.count('assist')
 
-            action_parts = []
-            if goals > 0:
-                action_parts.append(f"x{goals} Goal ⚽")
-            if assists > 0:
-                action_parts.append(f"x{assists} Pass 🎯")
+            curr_x = img_width - 350
 
-            action_str = "   ".join(action_parts)
-            draw.text((img_width - 240, y + 13), action_str, fill='#fbbf24', font=font_large)
+            if goals > 0:
+                draw.text((curr_x, y + 15), f"x{goals}", fill='#fbbf24', font=font_large)
+
+                # Геометрическое рисование футбольного мяча
+                icon_x = curr_x + 35
+                icon_y = y + 17
+                cx, cy = icon_x + 9, icon_y + 9
+
+                draw.ellipse([icon_x, icon_y, icon_x + 18, icon_y + 18], fill='#fbbf24', outline='#121214', width=2)
+                r_inner = 4
+                pts = []
+                for a in range(5):
+                    angle = math.radians(a * 72 - 90)
+                    pts.append((cx + r_inner * math.cos(angle), cy + r_inner * math.sin(angle)))
+                draw.polygon(pts, fill='#121214')
+                r_outer = 9
+                for a in range(5):
+                    angle = math.radians(a * 72 - 90)
+                    draw.line([
+                        (cx + r_inner * math.cos(angle), cy + r_inner * math.sin(angle)),
+                        (cx + r_outer * math.cos(angle), cy + r_outer * math.sin(angle))
+                    ], fill='#121214', width=2)
+
+                curr_x += 120  # Сдвигаем координату вправо для вывода ассистов (если они есть)
+
+            if assists > 0:
+                draw.text((curr_x, y + 15), f"x{assists}", fill='#38bdf8', font=font_large)
+
+
+                icon_x = curr_x + 35
+                icon_y = y + 17
+
+                # Мишень для ассистов
+                draw.ellipse([icon_x, icon_y, icon_x + 18, icon_y + 18], fill='#38bdf8', outline='#121214', width=2)
+                draw.ellipse([icon_x + 4, icon_y + 4, icon_x + 14, icon_y + 14], fill='#121214')
+                draw.ellipse([icon_x + 7, icon_y + 7, icon_x + 11, icon_y + 11], fill='#fbbf24')
 
     bio = io.BytesIO()
     bio.name = 'match_result.png'
@@ -517,20 +547,20 @@ def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.Byte
 
     try:
         font_small = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 10)
-        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 13)
+        font_medium = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 14)
         font_large = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 18)
     except IOError:
         try:
             font_small = ImageFont.truetype("DejaVuSans.ttf", 10)
-            font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 13)
+            font_medium = ImageFont.truetype("DejaVuSans-Bold.ttf", 14)
             font_large = ImageFont.truetype("DejaVuSans-Bold.ttf", 18)
         except IOError:
             font_small = font_medium = font_large = ImageFont.load_default()
 
     # Заголовок Команда А VS Команда Б
-    draw.text((50, 45), name_a[:24], fill=color_a_hex, font=font_large)
+    draw.text((50, 45), name_a[:36], fill=color_a_hex, font=font_large)
     draw.text((400 - 15, 45), "VS", fill='#fbbf24', font=font_large)
-    draw.text((800 - 280, 45), name_b[:24], fill=color_b_hex, font=font_large)
+    draw.text((800 - 280, 45), name_b[:36], fill=color_b_hex, font=font_large)
 
     draw.line([(40, 95), (img_width - 40, 95)], fill='#1f2937', width=2)
 
@@ -539,8 +569,8 @@ def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.Byte
         y = header_height + idx * row_height
         p = session.get(Player, pid)
         if p:
-            p_name = f"{p.full_name} ({p.nickname})"
-            p_label = "👑 (к)" if idx == 0 else f"Выбор №{idx}"
+            p_name = f"{p.full_name[:50]})"
+            p_label = "(К)" if idx == 0 else f""
 
             draw.rounded_rectangle([40, y, 380, y + row_height - 10], radius=8, fill='#121214', outline='#1f2937',
                                    width=1)
@@ -552,8 +582,8 @@ def draw_match_lineup_pillow(session: Session, match: Match) -> Optional[io.Byte
         y = header_height + idx * row_height
         p = session.get(Player, pid)
         if p:
-            p_name = f"{p.full_name} ({p.nickname})"
-            p_label = "👑 (к)" if idx == 0 else f"Выбор №{idx}"
+            p_name = f"{p.full_name[:50]}"
+            p_label = "К" if idx == 0 else f""
 
             draw.rounded_rectangle([420, y, 760, y + row_height - 10], radius=8, fill='#121214', outline='#1f2937',
                                    width=1)
