@@ -1019,7 +1019,7 @@ async def handle_player_selection_callback(update: Update, context: ContextTypes
 
     next_state_key = context.user_data['search_next_state']
     context.user_data[next_state_key] = player.nickname
-    await query.edit_message_text(f"Вы выбрали капитаном: <b>{player.full_name}</b>.", parse_mode='HTML')
+    # await query.edit_message_text(f"Вы выбрали капитаном: <b>{player.full_name}</b>.", parse_mode='HTML')
     del context.user_data['search_next_state']
 
     return await context.user_data['next_function'](update, context)
@@ -3699,7 +3699,7 @@ async def log_match_found_cap_b(update: Update, context: ContextTypes.DEFAULT_TY
     with SessionLocal() as session:
         cap_b = get_player_by_nickname(session, cap_b_nick)
         context.user_data['log_data']['cap_b_id'] = cap_b.tg_id
-        cap_a = session.get(Player, context.user_data['log_data']['cap_a_id'])
+        cap_a = get_player_by_tgid(session, context.user_data['log_data']['cap_a_id'])
 
     buttons = [
         [
