@@ -976,7 +976,14 @@ async def handle_player_search_query(update: Update, context: ContextTypes.DEFAU
         players = find_players(session, query)
 
     next_state_key = context.user_data.get('search_next_state')
-    current_state = CHOOSE_CAPTAIN_A if next_state_key == 'cap_a_nickname' else CHOOSE_CAPTAIN_B
+
+    STATE_MAP = {
+        'cap_a_nickname': CHOOSE_CAPTAIN_A,  # Для создания матча (Капитан А)
+        'cap_b_nickname': CHOOSE_CAPTAIN_B,  # Для создания матча (Капитан Б)
+        'log_cap_a_nick': LOG_CHOOSE_CAPTAIN_A,  # Для ручной записи (Капитан А)
+        'log_cap_b_nick': LOG_CHOOSE_CAPTAIN_B  # Для ручной записи (Капитан Б)
+    }
+    current_state = STATE_MAP.get(next_state_key, CHOOSE_CAPTAIN_A)
 
     if not players:
         await update.message.reply_text("⚠️ Игроки не найдены в базе. Попробуйте другой запрос или /cancel.")
