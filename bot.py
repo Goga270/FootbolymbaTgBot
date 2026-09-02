@@ -1009,20 +1009,28 @@ async def handle_player_search_query(update: Update, context: ContextTypes.DEFAU
 
 async def handle_player_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    player_id = int(query.data.split(':')[1])
+    try:
+        await query.answer()
+        player_id = int(query.data.split(':')[1])
 
-    with SessionLocal() as session:
-        player = session.get(Player, player_id)
-    if not player:
-        return await query.edit_message_text("Ошибка: игрок не найден.")
+        with SessionLocal() as session:
+            player = session.get(Player, player_id)
+        if not player:
+            return await query.edit_message_text("Ошибка: игрок не найден.")
 
-    next_state_key = context.user_data['search_next_state']
-    context.user_data[next_state_key] = player.nickname
-    # await query.edit_message_text(f"Вы выбрали капитаном: <b>{player.full_name}</b>.", parse_mode='HTML')
-    del context.user_data['search_next_state']
+        next_state_key = context.user_data['search_next_state']
+        context.user_data[next_state_key] = player.nickname
+        await query.edit_message_text(f"Вы выбрали капитаном: <b>{player.full_name}</b>.", parse_mode='HTML')
+        del context.user_data['search_next_state']
 
-    return await context.user_data['next_function'](update, context)
+        return await context.user_data['next_function'](update, context)
+    except Exception as e:
+            import traceback
+            logger.error(f"❌ Ошибка в handle_player_selection_callback: {e}\n{traceback.format_exc()}")
+            try:
+                await query.answer("❌ Произошла ошибка при выборе!", show_alert=True)
+            except Exception:
+                pass
 
 
 # --- Планирование матча ---
