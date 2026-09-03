@@ -964,27 +964,19 @@ async def list_matches(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # --- Логика поиска игроков ---
 
 async def start_player_search(update: Update, context: ContextTypes.DEFAULT_TYPE, next_state_key: str, prompt: str):
-    logger.info(f"\n[DEBUG START SEARCH] >>> Запуск поиска. Устанавливаем next_state_key = '{next_state_key}'")
     context.user_data['search_next_state'] = next_state_key
 
-    logger.info(f"[DEBUG START SEARCH] Текущее состояние памяти context.user_data: {context.user_data}")
     if update.callback_query:
-        logger.info("[DEBUG START SEARCH] Запрос пришел через CallbackQuery (кнопку). Редактируем сообщение.")
         await update.callback_query.edit_message_text(prompt, parse_mode='HTML')
     else:
-        logger.info("[DEBUG START SEARCH] Запрос пришел через Message (текст). Отправляем новое сообщение.")
         await update.message.reply_text(prompt, parse_mode='HTML')
 
 async def handle_player_search_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
-    logger.info(f"\n[DEBUG SEARCH QUERY] >>> Вход в поиск. Текст запроса: '{query}'")
-    logger.info(f"[DEBUG SEARCH QUERY] Память при входе context.user_data: {context.user_data}")
     with SessionLocal() as session:
         players = find_players(session, query)
 
     next_state_key = context.user_data.get('search_next_state')
-
-    logger.info(f"[DEBUG SEARCH QUERY] Извлеченный из памяти next_state_key: '{next_state_key}'")
 
     STATE_MAP = {
         'cap_a_nickname': CHOOSE_CAPTAIN_A,  # Для создания матча (Капитан А)
@@ -993,7 +985,6 @@ async def handle_player_search_query(update: Update, context: ContextTypes.DEFAU
         'log_cap_b_nick': LOG_CHOOSE_CAPTAIN_B  # Для ручной записи (Капитан Б)
     }
     current_state = STATE_MAP.get(next_state_key, CHOOSE_CAPTAIN_A)
-    logger.info(f"[DEBUG SEARCH QUERY] Вычисленный стейт возврата current_state: {current_state}")
 
     if not players:
         await update.message.reply_text("⚠️ Игроки не найдены в базе. Попробуйте другой запрос или /cancel.")
@@ -1015,13 +1006,10 @@ async def handle_player_search_query(update: Update, context: ContextTypes.DEFAU
         "Найдено несколько совпадений. Выберите нужного капитана:",
         reply_markup=InlineKeyboardMarkup(buttons)
     )
-    logger.info(f"[DEBUG SEARCH QUERY] Вывод кнопок успешен. Возвращаем стейт ожидания клика: {current_state}")
     return current_state
 
 async def handle_player_selection_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    logger.info(f"\n[DEBUG SELECT CALLBACK] >>> Клик по кнопке выбора! Data: '{query.data}'")
-    logger.info(f"[DEBUG SELECT CALLBACK] Память при входе context.user_data: {context.user_data}")
     try:
         await query.answer()
         player_id = int(query.data.split(':')[1])
@@ -1032,13 +1020,10 @@ async def handle_player_selection_callback(update: Update, context: ContextTypes
             return await query.edit_message_text("Ошибка: игрок не найден.")
 
         next_state_key = context.user_data['search_next_state']
-        logger.info(f"[DEBUG SELECT CALLBACK] Считываем из памяти next_state_key: '{next_state_key}'")
+
         context.user_data[next_state_key] = player.nickname
-        logger.info(f"[DEBUG SELECT CALLBACK] Записали в память: context.user_data['{next_state_key}'] = '{player.nickname}'")
         await query.edit_message_text(f"Вы выбрали капитаном: <b>{player.full_name}</b>.", parse_mode='HTML')
         del context.user_data['search_next_state']
-
-        logger.info(f"[DEBUG SELECT CALLBACK] Запускаем следующую функцию шага: {context.user_data['next_function'].__name__ if context.user_data['next_function'] else 'None'}")
 
         return await context.user_data['next_function'](update, context)
     except Exception as e:
